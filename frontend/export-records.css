@@ -1,0 +1,137 @@
+﻿/* =========================================================
+ * Export Records Page Styles
+ * DICT-NBP Inventory & Management Suite
+ * ========================================================= */
+
+/* ── Preset Quick-Filter Buttons ──────────────────────────── */
+.er-preset-btn {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.375rem;
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+}
+.er-preset-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #94a3b8;
+}
+.er-preset-btn:active {
+  transform: scale(0.95);
+}
+
+/* ── Export Action Buttons ────────────────────────────────── */
+.er-export-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  border: 1.5px solid;
+  background: #ffffff;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, box-shadow 0.18s, transform 0.12s;
+  text-align: left;
+  width: 100%;
+}
+.er-export-btn:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+}
+.er-export-btn:active {
+  transform: scale(0.98);
+}
+.er-export-btn-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.625rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.18s;
+}
+
+/* ── Summary Card Skeletons ──────────────────────────────── */
+.er-summary-card-skeleton {
+  height: 72px;
+  border-radius: 0.625rem;
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: er-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes er-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Summary Cards (rendered by JS) ─────────────────────── */
+.er-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.875rem;
+  border-radius: 0.625rem;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  transition: box-shadow 0.15s;
+}
+.er-summary-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.er-summary-card-label {
+  font-size: 0.67rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+.er-summary-card-value {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+}
+.er-summary-card-sub {
+  font-size: 0.65rem;
+  color: #94a3b8;
+}
+
+/* ── Export Log Items ─────────────────────────────────────── */
+.er-log-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.625rem 1rem;
+}
+.er-log-item-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  margin-top: 0.05rem;
+}
+.er-log-item-content {
+  flex: 1;
+  min-width: 0;
+}
+.er-log-item-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.er-log-item-time {
+  font-size: 0.65rem;
+  color: #94a3b8;
+  margin-top: 0.125rem;
+}

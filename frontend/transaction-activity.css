@@ -1,0 +1,54 @@
+/* ── Transaction Activity Styles ───────────────────────── */
+
+/* Button active states */
+.group-btn.active,
+.mode-btn.active {
+  background-color: #ffffff !important;
+  color: #0284c7 !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+
+.preset-btn.active {
+  background-color: #e0f2fe !important;
+  border-color: #7dd3fc !important;
+  color: #0369a1 !important;
+  font-weight: 600 !important;
+}
+
+/* Table row styling */
+#transactionsTableBody tr:hover {
+  background-color: #f8fafc;
+}
+
+/* Badge styles */
+.badge-added {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.badge-released {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  background-color: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+/* Canvas responsive container */
+canvas {
+  width: 100% !important;
+}

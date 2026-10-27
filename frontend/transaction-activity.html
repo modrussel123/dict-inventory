@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transaction Activity &mdash; DICT-NBP</title>
+  <meta name="description"
+    content="Real-time transaction activity log for DICT National Broadband Program Inventory System, Region 1 – Ilocos Norte Provincial Office.">
+  <link rel="icon" type="image/png" href="logo/dict-logo.png">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              100: '#e0f2fe',
+              500: '#0284c7',
+              600: '#0369a1',
+              700: '#075985',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- FontAwesome CDN for Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- Global Layout Styles (Shared Header, Sidebar, Footer) -->
+  <link rel="stylesheet" href="global-layout.css">
+
+  <!-- Page-specific styles -->
+  <link rel="stylesheet" href="transaction-activity.css">
+</head>
+
+<body class="h-full text-slate-800 flex flex-col min-h-screen">
+
+  <!-- Global Header (Mounted automatically by global-layout.js) -->
+  <header id="globalHeader"></header>
+
+  <!-- Main Content (Exact Dashboard margins and width) -->
+  <main class="flex-grow w-full max-w-[98%] mx-auto px-1 sm:px-3 lg:px-4 py-5 space-y-5">
+
+    <!-- Detailed Transactions Breakdown Table -->
+    <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div
+        class="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50">
+        <div>
+          <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+            <i class="fa-solid fa-list-check text-sky-600"></i>
+            Transaction Activity Breakdown
+          </h2>
+          <p class="text-xs text-slate-500 mt-0.5">All item additions and release events recorded in this period</p>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <!-- Search Filter -->
+          <div class="relative">
+            <i
+              class="fa-solid fa-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+            <input type="text" id="tableSearchInput" oninput="onTableSearchChange()" placeholder="Search item"
+              class="text-xs pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-sky-500 w-40 sm:w-56 shadow-2xs">
+          </div>
+
+          <!-- Status Filter (Additions / Releases) -->
+          <select id="tableTypeFilter" onchange="onTableFilterChange()" aria-label="Filter events by status"
+            class="text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-sky-500 shadow-2xs font-medium text-slate-700 cursor-pointer">
+            <option value="all">All Status</option>
+            <option value="added">Added Only</option>
+            <option value="released">Released Only</option>
+          </select>
+
+
+          <!-- Refresh Button -->
+          <button id="btnRefreshData" type="button" onclick="refreshMonitorData()"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg shadow-2xs transition active:scale-95 cursor-pointer">
+            <i id="refreshIcon" class="fa-solid fa-rotate text-sky-600 transition-transform"></i>
+            <span id="refreshBtnText">Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Table Container -->
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse text-xs">
+          <thead>
+            <tr
+              class="bg-slate-100/75 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px] select-none">
+              <th class="py-2.5 px-3 text-center w-12 text-slate-500 font-bold uppercase tracking-wider text-[11px]">#
+              </th>
+              <th class="py-2.5 px-3 cursor-pointer hover:bg-slate-200/60 transition"
+                onclick="sortTableByColumn('date')" title="Click to sort by Date">
+                <span class="inline-flex items-center gap-1.5">Date <i id="sortIcon_date"
+                    class="fa-solid fa-sort-down text-sky-600 text-[11px]"></i></span>
+              </th>
+              <th class="py-2.5 px-3 cursor-pointer hover:bg-slate-200/60 transition"
+                onclick="sortTableByColumn('type')" title="Click to sort by Status">
+                <span class="inline-flex items-center gap-1.5">Status <i id="sortIcon_type"
+                    class="fa-solid fa-sort text-slate-400 text-[10px]"></i></span>
+              </th>
+              <th class="py-2.5 px-3 cursor-pointer hover:bg-slate-200/60 transition min-w-[240px] max-w-[320px]"
+                onclick="sortTableByColumn('name')" title="Click to sort by Item Name">
+                <span class="inline-flex items-center gap-1.5">Item Name <i id="sortIcon_name"
+                    class="fa-solid fa-sort text-slate-400 text-[10px]"></i></span>
+              </th>
+              <th class="py-2.5 px-3 text-center">Serial No.</th>
+              <th class="py-2.5 px-3 text-center cursor-pointer hover:bg-slate-200/60 transition"
+                onclick="sortTableByColumn('unitType')" title="Click to sort by Unit Type">
+                <span class="inline-flex items-center justify-center gap-1.5">Unit Type <i id="sortIcon_unitType"
+                    class="fa-solid fa-sort text-slate-400 text-[10px]"></i></span>
+              </th>
+              <th class="py-2.5 px-3 text-right cursor-pointer hover:bg-slate-200/60 transition"
+                onclick="sortTableByColumn('quantity')" title="Click to sort by Quantity">
+                <span class="inline-flex items-center justify-end gap-1.5">Quantity <i id="sortIcon_quantity"
+                    class="fa-solid fa-sort text-slate-400 text-[10px]"></i></span>
+              </th>
+              <th class="py-2.5 px-3 text-right cursor-pointer hover:bg-slate-200/60 transition"
+                onclick="sortTableByColumn('unitPrice')" title="Click to sort by Unit Price">
+                <span class="inline-flex items-center justify-end gap-1.5">Unit Price <i id="sortIcon_unitPrice"
+                    class="fa-solid fa-sort text-slate-400 text-[10px]"></i></span>
+              </th>
+              <th class="py-2.5 px-3 text-right cursor-pointer hover:bg-slate-200/60 transition"
+                onclick="sortTableByColumn('value')" title="Click to sort by Total Value">
+                <span class="inline-flex items-center justify-end gap-1.5">Total Value <i id="sortIcon_value"
+                    class="fa-solid fa-sort text-slate-400 text-[10px]"></i></span>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="transactionsTableBody" class="divide-y divide-slate-100 text-slate-700">
+            <!-- Rendered dynamically -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Table Footer / Count & Last Updated -->
+      <div
+        class="p-3 border-t border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500">
+        <span id="tableRecordCount">Loading records...</span>
+        <div class="flex items-center gap-2.5">
+          <span id="lastUpdatedTime"
+            class="text-[11px] text-slate-600 font-medium bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+            Updated just now
+          </span>
+          <span class="text-[11px] text-slate-400">DICT Region 1 &mdash; Ilocos Norte</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Global Footer (Mounted automatically by global-layout.js) -->
+  <footer id="globalFooter"></footer>
+
+  <!-- Scripts -->
+  <script src="global-layout.js"></script>
+  <script src="transaction-activity.js"></script>
+
+</body>
+
+</html>

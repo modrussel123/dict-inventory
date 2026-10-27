@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Export Records &mdash; DICT-NBP</title>
+  <meta name="description"
+    content="Export inventory records as PDF or Excel for DICT National Broadband Program Inventory System, Region 1 &ndash; Ilocos Norte Provincial Office.">
+  <link rel="icon" type="image/png" href="logo/dict-logo.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: '#f0f9ff', 100: '#e0f2fe', 500: '#0284c7', 600: '#0369a1', 700: '#075985' }
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <link rel="stylesheet" href="global-layout.css">
+  <link rel="stylesheet" href="export-records.css">
+</head>
+
+<body class="h-full text-slate-800 flex flex-col min-h-screen">
+  <header id="globalHeader"></header>
+  <main class="flex-grow w-full max-w-[98%] mx-auto px-1 sm:px-3 lg:px-4 py-5 space-y-5">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div>
+        <h1 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+          <i class="fa-solid fa-file-export text-brand-600"></i> Export Records
+        </h1>
+        <p class="text-xs text-slate-500 mt-0.5">Generate PDF or Excel reports from the inventory database</p>
+      </div>
+      <div id="dataStatusBadge"
+        class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs text-slate-500">
+        <i class="fa-solid fa-circle-notch fa-spin text-brand-500"></i>
+        <span id="dataStatusText">Loading inventory data...</span>
+      </div>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <!-- Left: Export Settings -->
+      <div class="lg:col-span-1 space-y-4">
+        <!-- Date Range -->
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div class="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+            <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+              <i class="fa-solid fa-calendar-days text-brand-500"></i> Export Date Range
+            </h2>
+            <button type="button" onclick="clearExportDateRange()"
+              class="text-xs text-brand-600 hover:text-brand-800 font-semibold hover:underline cursor-pointer transition">Clear
+              Range</button>
+          </div>
+          <div class="p-4 space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label for="exportDateFrom" class="block text-[11px] font-semibold text-slate-500 mb-1">From</label>
+                <input type="date" id="exportDateFrom" onchange="updateExportRangeBadge()"
+                  class="w-full text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 transition">
+              </div>
+              <div>
+                <label for="exportDateTo" class="block text-[11px] font-semibold text-slate-500 mb-1">To</label>
+                <input type="date" id="exportDateTo" onchange="updateExportRangeBadge()"
+                  class="w-full text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 transition">
+              </div>
+            </div>
+            <div>
+              <label for="exportDateFilterType" class="block text-[11px] font-semibold text-slate-500 mb-1">Filter
+                by</label>
+              <select id="exportDateFilterType"
+                class="w-full text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 transition cursor-pointer">
+                <option value="any">Date Added or Released (Recommended)</option>
+                <option value="created">Date Added (Created) Only</option>
+                <option value="released">Release / Transaction Date Only</option>
+              </select>
+            </div>
+            <div>
+              <span class="text-[11px] font-semibold text-slate-500 block mb-1.5">Quick Presets</span>
+              <div class="flex flex-wrap gap-1.5">
+                <button type="button" onclick="setExportDatePreset('today')" class="er-preset-btn">Today</button>
+                <button type="button" onclick="setExportDatePreset('this_week')" class="er-preset-btn">This
+                  Week</button>
+                <button type="button" onclick="setExportDatePreset('this_month')" class="er-preset-btn">This
+                  Month</button>
+                <button type="button" onclick="setExportDatePreset('this_year')" class="er-preset-btn">This
+                  Year</button>
+              </div>
+              <p class="text-[10px] text-slate-400 mt-2">Leave blank to export all dates.</p>
+            </div>
+            <div id="exportRangeBadge"
+              class="hidden items-center gap-1.5 text-[11px] font-semibold bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full border border-blue-200 w-fit">
+              <i class="fa-solid fa-filter text-[10px]"></i> Date Filter Active
+            </div>
+          </div>
+        </div>
+        <!-- Export Scope -->
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div class="p-4 border-b border-slate-100 bg-slate-50">
+            <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+              <i class="fa-solid fa-table-list text-brand-500"></i> Export Contents
+            </h2>
+          </div>
+          <div class="p-4 space-y-2">
+            <select id="exportContentScope"
+              class="w-full text-xs px-2.5 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 transition cursor-pointer">
+              <option value="full">Export Full Inventory (Print All)</option>
+              <option value="travel">Export Travel Inventory</option>
+            </select>
+            <p class="text-[10px] text-slate-400 leading-relaxed">Includes: Item name, unit type, price, quantities,
+              values, release date, and remarks.</p>
+          </div>
+        </div>
+        <!-- Refresh -->
+        <button type="button" id="btnRefreshData" onclick="loadExportData(true)"
+          class="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-xl shadow-sm hover:bg-slate-50 transition active:scale-95 cursor-pointer">
+          <i id="refreshIcon" class="fa-solid fa-rotate text-brand-500"></i>
+          <span id="refreshBtnText">Refresh Data</span>
+        </button>
+      </div>
+      <!-- Right: Summary + Export Actions -->
+      <div class="lg:col-span-2 space-y-4">
+        <!-- Inventory Summary -->
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div class="p-4 border-b border-slate-100 bg-slate-50">
+            <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+              <i class="fa-solid fa-chart-bar text-brand-500"></i> Inventory Summary
+            </h2>
+            <p class="text-[11px] text-slate-500 mt-0.5">Overview of data that will be included in the export</p>
+          </div>
+          <div class="p-4 grid grid-cols-1 sm:grid-cols-3 gap-3" id="exportSummaryCards">
+            <div class="er-summary-card-skeleton"></div>
+            <div class="er-summary-card-skeleton"></div>
+            <div class="er-summary-card-skeleton"></div>
+          </div>
+        </div>
+        <!-- Export Buttons -->
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div class="p-4 border-b border-slate-100 bg-slate-50">
+            <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+              <i class="fa-solid fa-download text-brand-500"></i> Export Format
+            </h2>
+            <p class="text-[11px] text-slate-500 mt-0.5">Choose your preferred export format</p>
+          </div>
+          <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button type="button" id="btnExportPDF" onclick="exportToPDF()"
+              class="er-export-btn group border-rose-200 hover:border-rose-400 hover:bg-rose-50">
+              <div class="er-export-btn-icon bg-rose-100 group-hover:bg-rose-200">
+                <i class="fa-solid fa-file-pdf text-rose-600 text-xl"></i>
+              </div>
+              <div class="text-left">
+                <div class="text-sm font-bold text-slate-800">Export PDF</div>
+                <div class="text-[11px] text-slate-500">Formatted printable report</div>
+              </div>
+              <i class="fa-solid fa-arrow-down-to-line text-slate-400 group-hover:text-rose-500 ml-auto transition"></i>
+            </button>
+            <button type="button" id="btnExportExcel" onclick="exportToExcel()"
+              class="er-export-btn group border-emerald-200 hover:border-emerald-400 hover:bg-emerald-50">
+              <div class="er-export-btn-icon bg-emerald-100 group-hover:bg-emerald-200">
+                <i class="fa-solid fa-file-excel text-emerald-600 text-xl"></i>
+              </div>
+              <div class="text-left">
+                <div class="text-sm font-bold text-slate-800">Export Excel</div>
+                <div class="text-[11px] text-slate-500">Color-formatted spreadsheet</div>
+              </div>
+              <i
+                class="fa-solid fa-arrow-down-to-line text-slate-400 group-hover:text-emerald-500 ml-auto transition"></i>
+            </button>
+          </div>
+        </div>
+        <!-- Export Log -->
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div class="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+            <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+              <i class="fa-solid fa-clock-rotate-left text-brand-500"></i> Export Log
+            </h2>
+            <button type="button" onclick="clearExportLog()"
+              class="text-[11px] text-slate-400 hover:text-slate-600 font-medium cursor-pointer transition">Clear</button>
+          </div>
+          <div id="exportLogList" class="divide-y divide-slate-100 max-h-52 overflow-y-auto">
+            <div class="p-4 text-xs text-slate-400 text-center italic">No exports yet. Generate a report above.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filtered Records Preview Table -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      <div class="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+            <i class="fa-solid fa-table-list text-brand-600"></i> Records Preview
+          </h2>
+          <p class="text-[11px] text-slate-500 mt-0.5" id="previewTableSubtitle">
+            Showing records matching the selected date range
+          </p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="previewCountBadge"
+            class="text-xs font-semibold px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 border border-brand-200">
+            0 items
+          </span>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table id="inventoryTable" class="min-w-[1850px] w-full text-left border-collapse">
+          <thead>
+            <tr
+              class="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+              <th class="py-2.5 px-3 w-10 text-center">#</th>
+              <th class="py-2.5 px-3 min-w-[260px] text-left">Item & Description</th>
+              <th class="py-2.5 px-2 min-w-[120px] text-center">Serial Number</th>
+              <th class="py-2.5 px-2 min-w-[80px] text-center">Unit Type</th>
+              <th class="py-2.5 px-2 min-w-[110px] text-center">Per Unit Price</th>
+              <th class="py-2.5 px-2 min-w-[80px] text-center">Total Qty</th>
+              <th class="py-2.5 px-2 min-w-[125px] text-center">Total Qty Value</th>
+              <th class="py-2.5 px-2 min-w-[80px] text-center">Released Qty</th>
+              <th class="py-2.5 px-2 min-w-[125px] text-center">Released Qty Value</th>
+              <th class="py-2.5 px-2 min-w-[110px] text-center">Remaining In Stock Qty</th>
+              <th class="py-2.5 px-2 min-w-[130px] text-center">Remaining In Stock Qty Value</th>
+              <th class="py-2.5 px-2 min-w-[110px] text-center">Date Released</th>
+              <th class="py-2.5 px-2 min-w-[130px] text-center">History</th>
+              <th class="py-2.5 px-2 min-w-[220px] text-center">Remarks</th>
+            </tr>
+          </thead>
+          <tbody id="exportTableBody" class="divide-y divide-slate-100 text-sm">
+            <!-- Dynamic rows rendered via JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Empty State Placeholder -->
+      <div id="exportTableEmpty" class="hidden py-12 px-4 text-center">
+        <div class="w-16 h-16 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mx-auto mb-3">
+          <i class="fa-solid fa-boxes-packing text-2xl"></i>
+        </div>
+        <h3 class="text-base font-semibold text-slate-700">No Inventory Items Found</h3>
+        <p class="text-xs text-slate-400 mt-1">No items match the selected date range filter.</p>
+      </div>
+
+      <!-- Table Summary Footer Bar -->
+      <div class="bg-slate-50 border-t border-slate-200 p-4 sm:p-5">
+        <div class="text-xs sm:text-sm font-semibold text-slate-600 flex items-center gap-3 flex-wrap">
+          <span>Matching Items: <span id="tblTotalItems" class="font-bold text-slate-900">0</span></span>
+          <span class="text-slate-300">|</span>
+          <span class="text-sky-600">Total Stock Qty: <span id="tblTotalQty" class="font-bold">0</span></span>
+          <span class="text-slate-300">|</span>
+          <span class="text-sky-600">Total Stock Qty Value: <span id="tblTotalQtyValue" class="font-bold">PHP
+              0.00</span></span>
+          <span class="text-slate-300">|</span>
+          <span class="text-emerald-600">Total Released Qty: <span id="tblReleasedQty" class="font-bold">0</span></span>
+          <span class="text-slate-300">|</span>
+          <span class="text-emerald-600">Total Released Qty Value: <span id="tblReleasedValue" class="font-bold">PHP
+              0.00</span></span>
+          <span class="text-slate-300">|</span>
+          <span class="text-amber-600">Remaining In Stock Qty: <span id="tblRemainingQty"
+              class="font-bold">0</span></span>
+          <span class="text-slate-300">|</span>
+          <span class="text-amber-600">Remaining In Stock Qty Value: <span id="tblRemainingValue" class="font-bold">PHP
+              0.00</span></span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Release History Modal -->
+  <div id="releaseHistoryModal"
+    class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center hidden opacity-0 transition-opacity duration-200">
+    <div
+      class="bg-white rounded-xl shadow-xl border border-slate-200 max-w-2xl w-full p-6 mx-4 transform scale-95 transition-transform duration-200">
+      <div class="flex justify-between items-center mb-4 border-b pb-3">
+        <div>
+          <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-indigo-600"></i> Release History
+          </h3>
+          <p id="releaseHistoryItemName" class="text-xs text-slate-500 mt-1">-</p>
+        </div>
+        <button type="button" onclick="closeReleaseHistoryModal()"
+          class="text-slate-400 hover:text-slate-600 text-lg cursor-pointer" aria-label="Close release history">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[540px] text-left border-collapse">
+          <thead
+            class="bg-slate-50 border-y border-slate-200 text-xs font-bold text-slate-600 uppercase tracking-wider">
+            <tr>
+              <th class="py-3 px-4">Date Released & Time</th>
+              <th class="py-3 px-4 text-center">Released Qty</th>
+              <th class="py-3 px-4">Remarks</th>
+            </tr>
+          </thead>
+          <tbody id="releaseHistoryTableBody" class="divide-y divide-slate-100 text-sm"></tbody>
+        </table>
+      </div>
+      <p id="releaseHistoryEmpty" class="hidden py-8 text-center text-sm text-slate-500">No releases have been
+        recorded for this item.</p>
+    </div>
+  </div>
+
+  <!-- Edit History Modal -->
+  <div id="editHistoryModal"
+    class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center hidden opacity-0 transition-opacity duration-200">
+    <div
+      class="bg-white rounded-xl shadow-xl border border-slate-200 max-w-2xl w-full max-h-[90vh] p-4 sm:p-6 mx-4 flex flex-col overflow-hidden transform scale-95 transition-transform duration-200">
+      <div class="flex justify-between items-center mb-4 border-b pb-3 flex-shrink-0">
+        <div>
+          <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <i class="fa-solid fa-pen-to-square text-brand-500"></i> Edit History
+          </h3>
+          <p id="editHistoryItemName" class="text-xs text-slate-500 mt-1">-</p>
+        </div>
+        <button type="button" onclick="closeEditHistoryModal()"
+          class="text-slate-400 hover:text-slate-600 text-lg cursor-pointer" aria-label="Close edit history">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="overflow-auto overscroll-contain min-h-0">
+        <table class="w-full min-w-[540px] text-left border-collapse">
+          <thead
+            class="bg-slate-50 border-y border-slate-200 text-xs font-bold text-slate-600 uppercase tracking-wider sticky top-0">
+            <tr>
+              <th class="py-3 px-4">Edited Date & Time</th>
+              <th class="py-3 px-4">Changes</th>
+            </tr>
+          </thead>
+          <tbody id="editHistoryTableBody" class="divide-y divide-slate-100 text-sm"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div id="toast"
+    class="fixed bottom-6 left-1/2 -translate-x-1/2 translate-y-20 opacity-0 pointer-events-none z-50 flex items-center gap-3 bg-slate-900 text-white text-sm font-medium px-5 py-3 rounded-2xl shadow-2xl transition-all duration-300">
+    <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400"></i>
+    <span id="toastMessage">Done</span>
+  </div>
+  <footer id="globalFooter"></footer>
+  <script src="global-layout.js"></script>
+  <script src="export-records.js"></script>
+</body>
+
+</html>
