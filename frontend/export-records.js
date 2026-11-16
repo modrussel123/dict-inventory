@@ -12,12 +12,6 @@
 let items = [];
 let totalSalesRevenue = 0;
 let cachedLogoImg = null;
-let reportSignatories = {
-  preparedBy: atob('TWEuIEFubiBDLiBQYXNjdWE='),
-  approvedBy: atob('SmVzdXMgUy4gQWdsaWFtIEpyLg==')
-};
-const exportLog = [];
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function formatMoney(n) {
   return 'PHP ' + Number(n || 0).toLocaleString('en-US', {
@@ -61,13 +55,6 @@ function formatReleaseDateTime(release) {
   return `${formatDate(release.date)}, ${time}`;
 }
 
-function formatDateTime(value) {
-  if (!value || Number.isNaN(new Date(value).getTime())) return '-';
-  return new Date(value).toLocaleString('en-PH', {
-    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
-  });
-}
-
 function pdfText(value) {
   return String(value ?? '-')
     .replace(/[\u20B1]|&#8369;/g, 'PHP ')
@@ -83,19 +70,6 @@ function loadLogoImage(src) {
     img.onerror = () => resolve(null);
     img.src = src;
   });
-}
-
-async function loadReportSignatories() {
-  try {
-    const res = await fetch('/api/config/signatories');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.preparedBy) reportSignatories.preparedBy = data.preparedBy;
-      if (data.approvedBy) reportSignatories.approvedBy = data.approvedBy;
-    }
-  } catch (err) {
-    console.warn('Could not fetch signatories from API, using default configuration.');
-  }
 }
 
 // ── Release and Value Calculations ───────────────────────────────────────────
@@ -244,10 +218,6 @@ function getLatestRelease(item) {
   return releases[0] || null;
 }
 
-function getEditHistory(item) {
-  return Array.isArray(item.editHistory) ? item.editHistory : [];
-}
-
 function _getReleasedSerialsForItem(releaseHistory) {
   const released = new Set();
   (releaseHistory || []).forEach(r => (r.releasedSerials || []).forEach(s => released.add(s.trim())));
@@ -283,6 +253,88 @@ function _getXlsSerialText(serialMeta) {
     return serialMeta.lines.map(l => l.text).join('\n');
   }
   return serialMeta.lines.map(l => l.isDeducted ? l.text.split('').map(c => c + '\u0336').join('') : l.text).join('\n');
+}
+
+function _getPdfSerialCell(serialMeta) {
+  const content = serialMeta.lines.map(line => pdfText(line.text)).join('\n') || '-';
+  return serialMeta.hasDeducted ? { content, serialMeta } : content;
+}
+
+// Keep deduction flags alongside wrapped lines. AutoTable shares the raw cell
+// when a row continues on another page, so each fragment consumes its own lines.
+function _getPdfSerialHooks(doc) {
+  const renderedLines = new WeakMap();
+  return {
+    didParseCell({ section, cell }) {
+      const meta = cell.raw?.serialMeta;
+      if (section !== 'body' || !meta?.hasDeducted) return;
+      cell.styles.overflow = (_text, width) => {
+        const lines = meta.lines.flatMap(line =>
+          doc.splitTextToSize(pdfText(line.text), width + 1 / doc.internal.scaleFactor)
+            .map(text => ({ text, isDeducted: line.isDeducted }))
+        );
+        renderedLines.set(cell.raw, { lines, offset: 0 });
+        return lines.map(line => line.text);
+      };
+    },
+    didDrawCell({ section, cell }) {
+      const state = section === 'body' && renderedLines.get(cell.raw);
+      if (!state) return;
+      const fontHeight = cell.styles.fontSize / doc.internal.scaleFactor;
+      const lineHeight = fontHeight * doc.getLineHeightFactor();
+      const { x, y } = cell.getTextPos();
+      // AutoTable's text position is an alignment anchor. Its text renderer
+      // shifts multiline text upward for middle/bottom alignment before drawing.
+      const textHeight = cell.text.length * lineHeight;
+      const verticalOffset = cell.styles.valign === 'middle' ? textHeight / 2
+        : cell.styles.valign === 'bottom' ? textHeight : 0;
+      doc.saveGraphicsState();
+      doc.setDrawColor(220, 38, 38);
+      doc.setLineWidth(0.2);
+      cell.text.forEach((text, index) => {
+        if (!state.lines[state.offset + index]?.isDeducted) return;
+        const width = doc.getTextWidth(text);
+        const left = cell.styles.halign === 'center' ? x - width / 2
+          : cell.styles.halign === 'right' ? x - width : x;
+        const lineY = y - verticalOffset + fontHeight * 0.55 + index * lineHeight;
+        doc.line(left, lineY, left + width, lineY);
+      });
+      doc.restoreGraphicsState();
+      state.offset += cell.text.length;
+    }
+  };
+}
+
+function _styleXlsDeductedSerial(cell, meta) {
+  if (!meta?.hasDeducted) return;
+  cell.s.font = { ...cell.s.font, bold: true, color: { rgb: 'DC2626' }, strike: meta.allDeducted };
+  cell.s.fill = { patternType: 'solid', fgColor: { rgb: meta.allDeducted ? 'FEE2E2' : 'FEF2F2' } };
+}
+
+function getReleasedItemSerialText(target, releaseHistory, dateFromVal, dateToVal) {
+  const hasDateFilter = Boolean(dateFromVal || dateToVal);
+  const serials = [];
+  (releaseHistory || []).forEach(r => {
+    if (hasDateFilter && !releaseMatchesExportDateRange(r, dateFromVal, dateToVal)) {
+      return;
+    }
+    if (Array.isArray(r.releasedSerials)) {
+      r.releasedSerials.forEach(s => {
+        if (s && String(s).trim()) serials.push(String(s).trim());
+      });
+    } else if (typeof r.releasedSerials === 'string' && r.releasedSerials.trim()) {
+      serials.push(r.releasedSerials.trim());
+    }
+  });
+
+  const unique = [...new Set(serials)];
+  if (unique.length > 0) {
+    return unique.join('\n');
+  }
+
+  // When no serial numbers were recorded as released, return '-'
+  // (Do not dump unreleased inventory serial numbers)
+  return '-';
 }
 
 // ── Date Range Matching ──────────────────────────────────────────────────────
@@ -321,11 +373,13 @@ function releaseMatchesExportDateRange(release, fromStr, toStr) {
   );
 }
 
-function itemMatchesExportDateRange(item, fromStr, toStr, filterType = 'any') {
+function itemMatchesExportDateRange(item, fromStr, toStr) {
   if (!fromStr && !toStr) return true;
 
   const createdMatches = isDateWithinRange(item.createdAt, fromStr, toStr);
+  const legacyReleaseMatches = Boolean(item.releaseDate && isDateWithinRange(item.releaseDate, fromStr, toStr));
   const hasReleaseMatches = () => {
+    if (legacyReleaseMatches) return true;
     const parentReleases = getReleaseHistory(item);
     if (parentReleases.some(release => releaseMatchesExportDateRange(release, fromStr, toStr))) {
       return true;
@@ -341,9 +395,54 @@ function itemMatchesExportDateRange(item, fromStr, toStr, filterType = 'any') {
     return false;
   };
 
-  if (filterType === 'created') return createdMatches;
-  if (filterType === 'released') return hasReleaseMatches();
   return createdMatches || hasReleaseMatches();
+}
+
+function isExportRangeValid(fromStr, toStr) {
+  return !fromStr || !toStr || fromStr <= toStr;
+}
+
+function getExportItems(list, fromStr, toStr, scope = 'full') {
+  if (!isExportRangeValid(fromStr, toStr)) return [];
+  const releasedOnly = scope === 'travel_released';
+  const hasRange = Boolean(fromStr || toStr);
+  const matchingReleases = history => history.filter(release =>
+    Number(release.quantity) > 0 && releaseMatchesExportDateRange(release, fromStr, toStr)
+  );
+
+  return InventoryOrder.oldestFirst(list).filter(item =>
+    releasedOnly || itemMatchesExportDateRange(item, fromStr, toStr)
+  ).map(item => {
+    if (scope === 'full' || (!hasRange && !releasedOnly)) return item;
+    // Report-only copies: never trim the stored inventory or release history.
+    const mainHistory = matchingReleases(getMainItemReleaseHistory(item));
+    const subItems = (item.subItems || []).map(sub => {
+      const history = matchingReleases(getSubItemReleaseHistory(item, sub));
+      return {
+        ...sub, releaseHistory: history, soldQuantity: getReleasedQuantity(history),
+        // Print All serial status uses the complete history, even with a date range.
+        _serialExportMeta: _getSerialExportMeta(sub.serialNumber, getSubItemReleaseHistory(item, sub))
+      };
+    }).filter(sub => !releasedOnly || sub.soldQuantity > 0);
+    const history = [
+      ...mainHistory,
+      ...subItems.flatMap(sub => sub.releaseHistory.map(release => ({
+        ...release,
+        subItemId: sub.id,
+        subItemName: sub.name,
+        remarks: `[Sub-item: ${sub.name}]${release.remarks ? ` ${release.remarks}` : ''}`
+      })))
+    ];
+    return {
+      ...item,
+      _serialExportMeta: _getSerialExportMeta(item.serialNumber, getMainItemReleaseHistory(item)),
+      subItems,
+      releaseHistory: history,
+      soldQuantity: getReleasedQuantity(history),
+      releaseDate: history[0]?.date || '',
+      remarks: history[0]?.remarks || ''
+    };
+  }).filter(item => !releasedOnly || getItemReleasedQuantity(item) > 0);
 }
 
 function setExportDatePreset(preset) {
@@ -394,8 +493,23 @@ function updateExportRangeBadge() {
   const fromInput = document.getElementById('exportDateFrom');
   const toInput = document.getElementById('exportDateTo');
   const badge = document.getElementById('exportRangeBadge');
-  const isActive = Boolean((fromInput && fromInput.value) || (toInput && toInput.value));
-  if (badge) badge.classList.toggle('hidden', !isActive);
+  const from = fromInput?.value || '';
+  const to = toInput?.value || '';
+  const isActive = Boolean(from || to);
+  const valid = isExportRangeValid(from, to);
+  const error = document.getElementById('exportRangeError');
+  const help = document.getElementById('exportScopeHelp');
+  if (badge) badge.classList.toggle('hidden', !isActive || !valid);
+  if (error) error.classList.toggle('hidden', valid);
+  if (help) help.textContent = document.getElementById('exportContentScope')?.value === 'travel_released'
+    ? 'Date range filters release dates, quantities, and released serial numbers.'
+    : document.getElementById('exportContentScope')?.value === 'travel'
+      ? 'Includes items added or released within the selected dates; receipt quantities show current remaining stock.'
+      : 'Includes items added or released within the selected dates. Stock columns show current inventory.';
+  ['btnExportPDF', 'btnExportExcel'].forEach(id => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = !valid;
+  });
   renderSummaryCards();
   renderPreviewTable();
 }
@@ -425,80 +539,7 @@ function showToast(message, isError = false) {
   }, 3500);
 }
 
-const EXPORT_LOG_STORAGE_KEY = 'dict_nbp_export_log';
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function loadStoredExportLog() {
-  try {
-    const raw = localStorage.getItem(EXPORT_LOG_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        exportLog.length = 0;
-        exportLog.push(...parsed);
-      }
-    }
-  } catch (e) {
-    console.warn('Could not read export log from localStorage:', e);
-  }
-}
-
-function saveExportLog() {
-  try {
-    localStorage.setItem(EXPORT_LOG_STORAGE_KEY, JSON.stringify(exportLog));
-  } catch (e) {
-    console.warn('Could not save export log to localStorage:', e);
-  }
-}
-
-function renderExportLog() {
-  const listEl = document.getElementById('exportLogList');
-  if (!listEl) return;
-
-  if (exportLog.length === 0) {
-    listEl.innerHTML = '<div class="p-4 text-xs text-slate-400 text-center italic">No exports yet. Generate a report above.</div>';
-    return;
-  }
-
-  listEl.innerHTML = exportLog.map(entry => {
-    const isPdf = entry.type === 'pdf';
-    return `
-      <div class="er-log-item">
-        <div class="er-log-item-icon ${isPdf ? 'bg-rose-100 text-rose-600' : 'bg-emerald-100 text-emerald-600'}">
-          <i class="fa-solid ${isPdf ? 'fa-file-pdf' : 'fa-file-excel'}"></i>
-        </div>
-        <div class="er-log-item-content">
-          <div class="er-log-item-title" title="${escapeHtml(entry.filename || '')}">${escapeHtml(entry.filename || '')}</div>
-          <div class="er-log-item-time">${escapeHtml(entry.time || '')}</div>
-        </div>
-      </div>
-    `;
-  }).join('');
-}
-
-function addToExportLog(type, filename) {
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  exportLog.unshift({ type, filename, time: timeStr });
-  saveExportLog();
-  renderExportLog();
-}
-
-function clearExportLog() {
-  exportLog.length = 0;
-  saveExportLog();
-  renderExportLog();
-  showToast('Export log cleared.');
-}
 
 // ── Summary Cards Rendering ──────────────────────────────────────────────────
 function renderSummaryCards() {
@@ -507,56 +548,21 @@ function renderSummaryCards() {
 
   const dateFromVal = document.getElementById('exportDateFrom')?.value || '';
   const dateToVal = document.getElementById('exportDateTo')?.value || '';
-  const dateFilterType = document.getElementById('exportDateFilterType')?.value || 'any';
+  const scopeVal = document.getElementById('exportContentScope')?.value || 'full';
   const hasDateFilter = Boolean(dateFromVal || dateToVal);
 
-  let filtered = items;
-  if (hasDateFilter) {
-    filtered = items.filter(item => itemMatchesExportDateRange(item, dateFromVal, dateToVal, dateFilterType));
-  }
-
-  let totalQty = 0;
+  const filtered = getExportItems(items, dateFromVal, dateToVal, scopeVal);
   let totalSoldQty = 0;
-  let grandTotal = 0;
-  let totalReleaseValue = 0;
-
+  let effectiveSales = 0;
   filtered.forEach(item => {
-    const hasSubs = Array.isArray(item.subItems) && item.subItems.length > 0;
-    const subSum = hasSubs ? item.subItems.reduce((acc, s) => acc + ((Number(s.price) || 0) * (Number(s.quantity) || 0)), 0) : 0;
-    const lineTotal = hasSubs ? (subSum > 0 ? subSum : (item.price * item.quantity)) : (item.price * item.quantity);
-    grandTotal += lineTotal;
-
-    if (!hasSubs) {
-      totalQty += Number(item.quantity) || 0;
-      totalSoldQty += getMainItemReleasedQuantity(item);
-    } else {
-      item.subItems.forEach(sub => {
-        totalQty += Number(sub.quantity) || 0;
-        totalSoldQty += getSubItemReleasedQuantity(item, sub);
-      });
-    }
-
-    // Release value
-    getMainItemReleaseHistory(item).forEach(release => {
-      if (hasDateFilter && !releaseMatchesExportDateRange(release, dateFromVal, dateToVal)) return;
-      const rQty = parseInt(release.quantity) || 0;
-      const rPrice = Number(release.unitPrice ?? item.price) || 0;
-      totalReleaseValue += rQty * rPrice;
-    });
-
-    if (hasSubs) {
-      item.subItems.forEach(sub => {
-        getSubItemReleaseHistory(item, sub).forEach(release => {
-          if (hasDateFilter && !releaseMatchesExportDateRange(release, dateFromVal, dateToVal)) return;
-          const rQty = parseInt(release.quantity) || 0;
-          const rPrice = Number(release.unitPrice ?? sub.price ?? 0) || 0;
-          totalReleaseValue += rQty * rPrice;
-        });
-      });
-    }
+    const addReleases = (history, price) => {
+      const matching = history.filter(release => releaseMatchesExportDateRange(release, dateFromVal, dateToVal));
+      totalSoldQty += getReleasedQuantity(matching);
+      effectiveSales += getReleaseValue(matching, price);
+    };
+    addReleases(getMainItemReleaseHistory(item), item.price);
+    (item.subItems || []).forEach(sub => addReleases(getSubItemReleaseHistory(item, sub), sub.price));
   });
-
-  const effectiveSales = hasDateFilter ? totalReleaseValue : totalSalesRevenue;
 
   container.innerHTML = `
     <div class="er-summary-card">
@@ -565,12 +571,12 @@ function renderSummaryCards() {
       <span class="er-summary-card-sub">of ${items.length.toLocaleString('en-US')} total</span>
     </div>
     <div class="er-summary-card">
-      <span class="er-summary-card-label">Released Qty</span>
+      <span class="er-summary-card-label">Released Qty${hasDateFilter ? ' (In Range)' : ''}</span>
       <span class="er-summary-card-value text-indigo-600">${totalSoldQty.toLocaleString('en-US')}</span>
       <span class="er-summary-card-sub">transacted units</span>
     </div>
     <div class="er-summary-card">
-      <span class="er-summary-card-label">Released Value</span>
+      <span class="er-summary-card-label">Released Value${hasDateFilter ? ' (In Range)' : ''}</span>
       <span class="er-summary-card-value text-emerald-600">${formatMoney(effectiveSales)}</span>
       <span class="er-summary-card-sub">disbursed total</span>
     </div>
@@ -594,7 +600,7 @@ async function loadExportData(forceRefresh = false) {
     const res = await fetch('/api/items?_t=' + Date.now());
     if (!res.ok) throw new Error('Server returned ' + res.status);
     const data = await res.json();
-    items = Array.isArray(data.items) ? data.items : [];
+    items = InventoryOrder.oldestFirst(data.items);
     totalSalesRevenue = Number(data.totalSalesRevenue) || 0;
 
     if (badge) {
@@ -635,22 +641,26 @@ async function exportToPDF() {
 
   const dateFromVal = document.getElementById('exportDateFrom')?.value || '';
   const dateToVal = document.getElementById('exportDateTo')?.value || '';
-  const dateFilterType = document.getElementById('exportDateFilterType')?.value || 'any';
-  const isTravelExport = document.getElementById('exportContentScope')?.value === 'travel';
+  const scopeVal = document.getElementById('exportContentScope')?.value || 'full';
+  const isTravelExport = scopeVal === 'travel' || scopeVal === 'travel_released';
+  const isReleasedOnly = scopeVal === 'travel_released';
   const hasDateFilter = Boolean(dateFromVal || dateToVal);
 
-  let sortedItems = [...items];
-  if (hasDateFilter) {
-    sortedItems = sortedItems.filter(item => itemMatchesExportDateRange(item, dateFromVal, dateToVal, dateFilterType));
-    if (sortedItems.length === 0) {
-      showToast('No items match the selected export date range.', true);
-      return;
-    }
+  if (!isExportRangeValid(dateFromVal, dateToVal)) {
+    showToast('From date must be on or before To date.', true);
+    return;
+  }
+  const sortedItems = getExportItems(items, dateFromVal, dateToVal, scopeVal);
+  if (!sortedItems.length) {
+    showToast(isReleasedOnly ? 'No releases match the selected date range.' : 'No items match the selected export date range.', true);
+    return;
   }
 
   let dateRangeLabel = '';
   const isSameDayRange = Boolean(dateFromVal && dateToVal && dateFromVal === dateToVal);
-  if (dateFromVal && dateToVal && !isSameDayRange) {
+  if (isSameDayRange) {
+    dateRangeLabel = `Date: ${formatDate(dateFromVal)}`;
+  } else if (dateFromVal && dateToVal) {
     dateRangeLabel = `Period: ${formatDate(dateFromVal)} - ${formatDate(dateToVal)}`;
   } else if (dateFromVal && !dateToVal) {
     dateRangeLabel = `Period: From ${formatDate(dateFromVal)}`;
@@ -659,42 +669,396 @@ async function exportToPDF() {
   }
 
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-  const formatPdfMoney = (val) => 'PHP ' + Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-  // Centered DICT Main Logo
   const logoImg = cachedLogoImg || await loadLogoImage('logo/dict-main-logo.png');
-  if (logoImg) {
-    try {
-      const logoW = 105;
-      const logoH = 105 / (795 / 144);
-      const logoX = (297 - logoW) / 2;
-      doc.addImage(logoImg, 'PNG', logoX, 8, logoW, logoH);
-    } catch (err) {
-      console.warn('Could not render logo in PDF:', err);
+  const formatPdfMoney = (val) => 'PHP ' + Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fileDateSuffix = (dateFromVal && dateToVal && !isSameDayRange)
+    ? `${dateFromVal}_to_${dateToVal}`
+    : (dateFromVal || dateToVal || new Date().toISOString().slice(0, 10));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ACKNOWLEDGEMENT RECEIPT — Portrait A4
+  // ══════════════════════════════════════════════════════════════════════════
+  if (isTravelExport) {
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+    // Portrait A4: 210 × 297 mm
+    const PW = 210;
+    const PH = 297;
+    const ML = 15; // left margin
+    const MR = 15; // right margin
+    const TW = PW - ML - MR; // table width
+    const FOOTER_Y = PH - 25;
+    // The reference footer is inset further than the item table.
+    const FOOTER_LEFT = 44;
+    const FOOTER_RIGHT = PW - 32;
+
+    // ── Header / Footer helpers ──────────────────────────────────────────────
+    function drawAckHeader(d) {
+      if (logoImg) {
+        try {
+          const logoNativeW = 795, logoNativeH = 144;
+          const lw = TW;
+          const lh = lw * (logoNativeH / logoNativeW);
+          d.addImage(logoImg, 'PNG', ML, 8, lw, lh);
+        } catch (e) { console.warn('logo error', e); }
+      }
+    }
+
+    function drawAckFooter(d, pageNum, totalPages) {
+      // Inset blue rule and two address/contact columns, as on the receipt template.
+      const lineY = FOOTER_Y - 3;
+      d.setDrawColor(120, 155, 215);
+      d.setLineWidth(0.25);
+      d.line(FOOTER_LEFT, lineY, FOOTER_RIGHT, lineY);
+
+      d.setTextColor(48, 85, 150);
+
+      // Line 1: Normal font weight
+      d.setFont(undefined, 'normal');
+      d.setFontSize(7.5);
+      d.text('DICT Regional Office 1', FOOTER_LEFT, FOOTER_Y);
+      d.text('https://www.dict.gov.ph', FOOTER_RIGHT, FOOTER_Y, { align: 'right' });
+
+      // Line 2
+      d.text('3F Kenny Plaza Bldg., M.L. Quezon Ave.,', FOOTER_LEFT, FOOTER_Y + 3.6);
+      d.text('region1@dict.gov.ph', FOOTER_RIGHT, FOOTER_Y + 3.6, { align: 'right' });
+
+      // Line 3
+      d.text('San Fernando City, La Union 2500', FOOTER_LEFT, FOOTER_Y + 7.2);
+
+      // Right-align the complete caption, including the final page count.
+      const line4Y = FOOTER_Y + 10.8;
+      d.setFont(undefined, 'italic');
+      const caption = 'Acknowledgement Receipt';
+      const captionW = d.getTextWidth(caption);
+      d.setFont(undefined, 'normal');
+      const separator = '  |  ';
+      const separatorW = d.getTextWidth(separator);
+      d.setFont(undefined, 'italic');
+      const pageW = d.getTextWidth('Page ');
+      d.setFont(undefined, 'bold');
+      const count = `${pageNum} of ${totalPages}`;
+      const countW = d.getTextWidth(count);
+      const captionX = FOOTER_RIGHT - captionW - separatorW - pageW - countW;
+      d.setFont(undefined, 'italic');
+      d.text(caption, captionX, line4Y);
+      d.setFont(undefined, 'normal');
+      d.text(separator, captionX + captionW, line4Y);
+      d.setFont(undefined, 'italic');
+      d.text('Page ', FOOTER_RIGHT - pageW - countW, line4Y);
+      d.setFont(undefined, 'bold');
+      d.text(count, FOOTER_RIGHT - countW, line4Y);
+    }
+
+    // Logo height
+    const logoNativeW = 795, logoNativeH = 144;
+    const logoH = TW * (logoNativeH / logoNativeW);
+    const CONTENT_TOP = 8 + logoH + 5; // y just below logo
+
+    // ── Draw header on page 1 ────────────────────────────────────────────────
+    drawAckHeader(doc);
+
+    // Thin separator line below header
+    doc.setDrawColor(30, 64, 175);
+    doc.setLineWidth(0.4);
+    doc.line(ML, CONTENT_TOP - 1, ML + TW, CONTENT_TOP - 1);
+
+    // ── Title ────────────────────────────────────────────────────────────────
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text('ACKNOWLEDGEMENT RECIEPT', ML, CONTENT_TOP + 7);
+
+    // ── Date blank ───────────────────────────────────────────────────────────
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    const dateLabel = 'Date:';
+    doc.text(dateLabel, ML, CONTENT_TOP + 15);
+    const dateLabelW = doc.getTextWidth(dateLabel);
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.3);
+    doc.line(ML + dateLabelW + 1.5, CONTENT_TOP + 15, ML + 75, CONTENT_TOP + 15);
+
+    // ── Acknowledgement body text ─────────────────────────────────────────────
+    const bodyY = CONTENT_TOP + 23;
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(15, 23, 42);
+
+    // "I, ___________, hereby acknowledge..."
+    const ackLine1 = 'I,';
+    doc.text(ackLine1, ML, bodyY);
+    const ackLine1W = doc.getTextWidth(ackLine1);
+    const iBlankStart = ML + ackLine1W + 1.5;
+    const iBlankEnd = ML + 95;
+    doc.line(iBlankStart, bodyY, iBlankEnd, bodyY);
+    doc.text(', hereby acknowledge the receipt of the', iBlankEnd + 0.8, bodyY);
+
+    doc.text('following Materials/items from the department of the information and communications', ML, bodyY + 6);
+    const techLine = 'Technology on this day,';
+    doc.text(techLine, ML, bodyY + 12);
+    const techLineW = doc.getTextWidth(techLine);
+    const dayBlankStart = ML + techLineW + 1.5;
+    const dayBlankEnd = dayBlankStart + 42;
+    doc.line(dayBlankStart, bodyY + 12, dayBlankEnd, bodyY + 12);
+    doc.text(':', dayBlankEnd + 0.8, bodyY + 12);
+
+    const TABLE_TOP = bodyY + 18;
+
+    // ── Build table rows ──────────────────────────────────────────────────────
+    const ackRows = [];
+    let rowNum = 0;
+    let totalReleasedQty = 0;
+    let totalReleasedValue = 0;
+
+    sortedItems.forEach((item, itemIndex) => {
+      const hasSubs = Array.isArray(item.subItems) && item.subItems.length > 0;
+      const itemReleasedQty = getItemReleasedQuantity(item);
+      const serialMeta = item._serialExportMeta || _getSerialExportMeta(item.serialNumber, getMainItemReleaseHistory(item));
+      const remarks = isReleasedOnly ? pdfText(item.inventoryRemarks || item.remarks || (getLatestRelease(item)?.remarks || '')) : '';
+
+      if (!hasSubs) {
+        if (isReleasedOnly && itemReleasedQty <= 0) return;
+        rowNum++;
+        totalReleasedQty += itemReleasedQty;
+        totalReleasedValue += getItemReleasedValue(item);
+        const dispSerial = isReleasedOnly
+          ? pdfText(getReleasedItemSerialText(item, getReleaseHistory(item), dateFromVal, dateToVal))
+          : _getPdfSerialCell(serialMeta);
+        ackRows.push([
+          `${rowNum}.`,
+          pdfText(item.name + (item.description ? '\n' + item.description : '')),
+          isReleasedOnly ? String(itemReleasedQty) : String(Number(item.quantity) || 0),
+          dispSerial,
+          remarks
+        ]);
+      } else {
+        const subItemsToProcess = isReleasedOnly
+          ? item.subItems.filter(sub => getReleasedQuantity(getSubItemReleaseHistory(item, sub)) > 0)
+          : item.subItems;
+
+        if (isReleasedOnly && subItemsToProcess.length === 0) return;
+
+        // Keep parent serials visible in Print All, alongside the sub-item rows.
+        rowNum++;
+        ackRows.push([
+          `${rowNum}.`,
+          pdfText(item.name + (item.description ? '\n' + item.description : '')),
+          isReleasedOnly ? '' : String(Number(item.quantity) || 0),
+          isReleasedOnly ? '-' : _getPdfSerialCell(serialMeta),
+          remarks
+        ]);
+        // Sub-items
+        subItemsToProcess.forEach((sub, subIdx) => {
+          const subReleaseHistory = getSubItemReleaseHistory(item, sub);
+          const subReleasedQty = getReleasedQuantity(subReleaseHistory);
+          const subPrice = Number(sub.price) || 0;
+          totalReleasedQty += subReleasedQty;
+          totalReleasedValue += (subReleasedQty * subPrice);
+          const subSerialMeta = sub._serialExportMeta || _getSerialExportMeta(sub.serialNumber, subReleaseHistory);
+          const dispSubSerial = isReleasedOnly
+            ? pdfText(getReleasedItemSerialText(sub, subReleaseHistory, dateFromVal, dateToVal))
+            : _getPdfSerialCell(subSerialMeta);
+          ackRows.push([
+            `${rowNum}.${subIdx + 1}`,
+            pdfText('>> ' + sub.name + (sub.description ? '\n' + sub.description : '')),
+            isReleasedOnly ? String(subReleasedQty) : String(Number(sub.quantity) || 0),
+            dispSubSerial,
+            isReleasedOnly ? pdfText(sub.inventoryRemarks || sub.remarks || '') : ''
+          ]);
+        });
+      }
+    });
+
+    if (isReleasedOnly && ackRows.length === 0) {
+      showToast('No released items found to export in Acknowledgement Receipt.', true);
+      return;
+    }
+
+    // ── autoTable ─────────────────────────────────────────────────────────────
+    doc.autoTable({
+      ..._getPdfSerialHooks(doc),
+      head: [['Item No.', 'Description of Item', 'Quantity', 'Serial Number', 'Remarks']],
+      body: ackRows,
+      startY: TABLE_TOP,
+      theme: 'grid',
+      headStyles: {
+        fillColor: [255, 255, 255],
+        textColor: [0, 0, 0],
+        fontStyle: 'bold',
+        fontSize: 9,
+        cellPadding: 2.5,
+        halign: 'center',
+        valign: 'middle',
+        lineWidth: 0.3,
+        lineColor: [0, 0, 0]
+      },
+      styles: {
+        fontSize: 9,
+        cellPadding: 2.5,
+        halign: 'left',
+        valign: 'top',
+        overflow: 'linebreak',
+        textColor: [0, 0, 0],
+        lineWidth: 0.3,
+        lineColor: [0, 0, 0],
+        fillColor: [255, 255, 255]
+      },
+      alternateRowStyles: {
+        fillColor: [255, 255, 255]
+      },
+      margin: { top: 52, left: ML, right: MR, bottom: 35 },
+      tableWidth: TW,
+      rowPageBreak: 'auto',
+      columnStyles: {
+        0: { cellWidth: 18, halign: 'center', fontStyle: 'bold' },
+        1: { cellWidth: 70, halign: 'left' },
+        2: { cellWidth: 20, halign: 'center' },
+        3: { cellWidth: 47, halign: 'left', fontSize: 8 },
+        4: { cellWidth: 25, halign: 'left' }
+      },
+      didDrawPage: function (data) {
+        if (data.pageNumber > 1) {
+          drawAckHeader(doc);
+          // Separator line below header
+          const sepY = 8 + logoH + 4;
+          doc.setDrawColor(30, 64, 175);
+          doc.setLineWidth(0.4);
+          doc.line(ML, sepY, ML + TW, sepY);
+        }
+      }
+    });
+
+    // ── Responsibility Statement & Signatures Block ─────────────────────────
+    // If the table has enough space below it, place the block on the same page.
+    // Otherwise, push it to a new concluding page.
+    const SIGNATURE_BLOCK_HEIGHT = 99; // statement plus Received By and Issued By fields
+    const GAP_BELOW_TABLE = 8;
+    const SAFE_BOTTOM = (FOOTER_Y - 3) - 6; // at least 6mm breathing room above footer divider line
+    const tableFinalY = (doc.lastAutoTable && doc.lastAutoTable.finalY) ? doc.lastAutoTable.finalY : TABLE_TOP;
+
+    let startY;
+    if (tableFinalY + GAP_BELOW_TABLE + SIGNATURE_BLOCK_HEIGHT <= SAFE_BOTTOM) {
+      // Enough space: place directly below the table on the current page
+      startY = tableFinalY + GAP_BELOW_TABLE;
+    } else {
+      // Space is too small: create a new page with header
+      doc.addPage();
+      drawAckHeader(doc);
+      const lastPageSepY = 8 + logoH + 4;
+      doc.setDrawColor(30, 64, 175);
+      doc.setLineWidth(0.4);
+      doc.line(ML, lastPageSepY, ML + TW, lastPageSepY);
+      startY = lastPageSepY + 14;
+    }
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(15, 23, 42);
+    doc.text('These items have been received in good condition and will be used/stored/handled as agreed', ML, startY);
+    doc.text('upon. I accept responsibility for the items listed above.', ML, startY + 5.5);
+
+    function drawFormField(label, y) {
+      doc.setFontSize(10);
+      doc.setFont(undefined, 'normal');
+      doc.setTextColor(15, 23, 42);
+      doc.text(label, ML, y);
+      const lw = doc.getTextWidth(label) + 1.5;
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.35);
+      doc.line(ML + lw, y + 0.5, ML + 115, y + 0.5);
+    }
+
+    ['Received By:', 'Issued By:'].forEach((heading, index) => {
+      const signatureY = startY + 18 + index * 48;
+      doc.setFontSize(10.5);
+      doc.setFont(undefined, 'bold');
+      doc.setTextColor(15, 23, 42);
+      doc.text(heading, ML, signatureY);
+
+      drawFormField('Name:', signatureY + 8);
+      drawFormField('Signature:', signatureY + 16);
+      drawFormField('Destination:', signatureY + 24);
+      drawFormField('Contact No.:', signatureY + 32);
+    });
+
+    // ── Footers on all pages ──────────────────────────────────────────────────
+    const totalPdfPages = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= totalPdfPages; p++) {
+      doc.setPage(p);
+      drawAckFooter(doc, p, totalPdfPages);
+    }
+
+    const ackFilename = isReleasedOnly
+      ? `acknowledgement_receipt_released_${fileDateSuffix}.pdf`
+      : `acknowledgement_receipt_${fileDateSuffix}.pdf`;
+    doc.save(ackFilename);
+    showToast(`Acknowledgement Receipt (${isReleasedOnly ? 'Released Items' : 'All Items'})${hasDateFilter ? ' filtered' : ''} PDF export generated.`);
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // FULL INVENTORY SUMMARY — Landscape A4
+  // ══════════════════════════════════════════════════════════════════════════
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+  // ── Header / Footer helper ────────────────────────────────────────────────
+  const PAGE_W = 297; // A4 landscape width in mm
+  const PAGE_H = 210; // A4 landscape height in mm
+  const MARGIN_L = 7;
+  const FOOTER_Y = PAGE_H - 8; // footer baseline
+  const HEADER_W = 140;
+  const HEADER_H = HEADER_W * (144 / 795);
+  const HEADER_Y = 7;
+  const CONTENT_START_Y = HEADER_Y + HEADER_H + 3;
+
+  function drawPageHeader(pageDoc) {
+    if (logoImg) {
+      try {
+        pageDoc.addImage(logoImg, 'PNG', (PAGE_W - HEADER_W) / 2, HEADER_Y, HEADER_W, HEADER_H);
+      } catch (err) {
+        console.warn('Could not render logo in PDF:', err);
+      }
     }
   }
 
-  const isReleaseOnlyFilter = hasDateFilter && dateFilterType === 'released';
-  doc.setFontSize(16);
+  function drawPageFooter(pageDoc, pageNum, totalPages) {
+    pageDoc.setDrawColor(180, 180, 180);
+    pageDoc.setLineWidth(0.25);
+    pageDoc.line(MARGIN_L, FOOTER_Y - 4, PAGE_W - MARGIN_L, FOOTER_Y - 4);
+
+    pageDoc.setFontSize(7.5);
+    pageDoc.setFont(undefined, 'normal');
+    pageDoc.setTextColor(100, 116, 139);
+
+    const addrLeft = 'DICT Regional Office 1  |  3F Kenny Plaza Bldg., M.L. Quezon Ave., San Fernando City, La Union 2500';
+    const addrRight = 'https://www.dict.gov.ph  |  region1@dict.gov.ph';
+    pageDoc.text(addrLeft, MARGIN_L, FOOTER_Y);
+    pageDoc.text(addrRight, PAGE_W - MARGIN_L, FOOTER_Y, { align: 'right' });
+
+    pageDoc.setFont(undefined, 'bold');
+    pageDoc.setTextColor(71, 85, 105);
+    pageDoc.text(`Page ${pageNum} of ${totalPages}`, PAGE_W / 2, FOOTER_Y, { align: 'center' });
+  }
+
+  // Draw header on page 1
+  drawPageHeader(doc);
+
+  doc.setFontSize(15);
   doc.setTextColor(15, 23, 42);
   doc.setFont(undefined, 'bold');
-  doc.text(isTravelExport
-    ? "Travel Inventory Report"
-    : (isReleaseOnlyFilter ? "Inventory Release & Disbursement Report" : "Inventory & Stock Summary Report"), 148.5, 33, { align: 'center' });
+  doc.text('Inventory & Stock Summary Report', PAGE_W / 2, CONTENT_START_Y + 5, { align: 'center' });
 
-  doc.setFontSize(9.5);
+  doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
   doc.setFont(undefined, 'normal');
   const subtitle = `Generated on: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}${dateRangeLabel ? `   |   ${dateRangeLabel}` : ''}`;
-  doc.text(subtitle, 148.5, 39, { align: 'center' });
+  doc.text(subtitle, PAGE_W / 2, CONTENT_START_Y + 11, { align: 'center' });
 
-  const tableColumn = isTravelExport
-    ? ['#', 'Item & Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Released Qty', 'Released Qty Value', 'Date Released', 'Remarks']
-    : ['#', 'Item & Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Total Qty', 'Total Qty Value', 'Released Qty', 'Released Qty Value', 'Remaining In\nStock Qty', 'Remaining In\nStock Value', 'Date Released', 'Remarks'];
+  const TABLE_START_Y = CONTENT_START_Y + 16;
+
+  const tableColumn = ['#', 'Item & Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Total Qty', 'Total Qty Value', 'Released Qty', 'Released Qty Value', 'Remaining In\nStock Qty', 'Remaining In\nStock Value', 'Date Released', 'Remarks'];
   const tableRows = [];
   const releaseHistoryRows = [];
-  const editHistoryRows = [];
 
   let totalQty = 0;
   let totalSoldQty = 0;
@@ -729,8 +1093,7 @@ async function exportToPDF() {
     const addedPart = `Added: ${formatDate(item.createdAt)}`;
     const details = [namePart, descPart, addedPart].filter(Boolean).join('\n\n');
     const itemRowNumber = itemIndex + 1;
-    const itemSerialLines = (item.serialNumber || '').split('\n').map(s => s.trim()).filter(Boolean);
-    const serialCellPdf = itemSerialLines.length > 0 ? pdfText(itemSerialLines.join('\n')) : '-';
+    const serialCellPdf = _getPdfSerialCell(_getSerialExportMeta(item.serialNumber, getReleaseHistory(item)));
 
     const fullItemData = [
       itemRowNumber,
@@ -747,11 +1110,8 @@ async function exportToPDF() {
       formatPdfReleaseDateTime(latestRelease || (item.releaseDate ? { date: item.releaseDate } : null)),
       pdfText(item.inventoryRemarks || '-')
     ];
-    tableRows.push(isTravelExport
-      ? [fullItemData[0], fullItemData[1], fullItemData[2], fullItemData[3], fullItemData[4], fullItemData[7], fullItemData[8], fullItemData[11], fullItemData[12]]
-      : fullItemData);
+    tableRows.push(fullItemData);
 
-    // Sub-item rows
     if (hasSubs) {
       item.subItems.forEach((sub, subIdx) => {
         const subPrice = Number(sub.price) || 0;
@@ -759,12 +1119,11 @@ async function exportToPDF() {
         const subReleaseHistory = getSubItemReleaseHistory(item, sub);
         const subReleasedQty = getReleasedQuantity(subReleaseHistory);
         const subLatest = subReleaseHistory[0] || null;
-        const subSerialLines = (sub.serialNumber || '').split('\n').map(s => s.trim()).filter(Boolean);
-        const subSerialCellPdf = subSerialLines.length > 0 ? pdfText(subSerialLines.join('\n')) : '-';
+        const subSerialCellPdf = _getPdfSerialCell(_getSerialExportMeta(sub.serialNumber, subReleaseHistory));
 
         totalQty += subQty;
         totalSoldQty += subReleasedQty;
-        const fullSubItemData = [
+        tableRows.push([
           `${itemRowNumber}.${subIdx + 1}`,
           pdfText(`  >> ${sub.name}`),
           subSerialCellPdf,
@@ -778,14 +1137,11 @@ async function exportToPDF() {
           formatPdfMoney(subQty * subPrice),
           subLatest ? formatPdfReleaseDateTime(subLatest) : '-',
           pdfText(sub.inventoryRemarks || '-')
-        ];
-        tableRows.push(isTravelExport
-          ? [fullSubItemData[0], fullSubItemData[1], fullSubItemData[2], fullSubItemData[3], fullSubItemData[4], fullSubItemData[7], fullSubItemData[8], fullSubItemData[11], fullSubItemData[12]]
-          : fullSubItemData);
+        ]);
       });
     }
 
-    // Parent release history
+    // Release history rows
     getMainItemReleaseHistory(item).forEach(release => {
       if (hasDateFilter && !releaseMatchesExportDateRange(release, dateFromVal, dateToVal)) return;
       const releaseUnitPrice = Number(release.unitPrice ?? item.price);
@@ -807,7 +1163,6 @@ async function exportToPDF() {
       ]);
     });
 
-    // Sub-item release history
     if (hasSubs) {
       item.subItems.forEach(sub => {
         const subRelHist = getSubItemReleaseHistory(item, sub);
@@ -833,28 +1188,13 @@ async function exportToPDF() {
         });
       });
     }
-
-    // Edit history
-    getEditHistory(item).forEach(edit => {
-      if (hasDateFilter && !isDateWithinRange(edit.changedAt, dateFromVal, dateToVal)) return;
-      (edit.changes || []).forEach(change => {
-        editHistoryRows.push([
-          editHistoryRows.length + 1,
-          pdfText(item.name),
-          pdfText(item.unitType || item.category || 'pcs'),
-          formatPdfDateTime(edit.changedAt),
-          pdfText(change.label || 'Change'),
-          pdfText(change.from || '-'),
-          pdfText(change.to || '-')
-        ]);
-      });
-    });
   });
 
   doc.autoTable({
+    ..._getPdfSerialHooks(doc),
     head: [tableColumn],
     body: tableRows,
-    startY: 44,
+    startY: TABLE_START_Y,
     theme: 'striped',
     headStyles: {
       fillColor: [2, 132, 199],
@@ -874,20 +1214,10 @@ async function exportToPDF() {
       valign: 'middle',
       overflow: 'linebreak'
     },
-    margin: { left: 7, right: 7 },
-    tableWidth: 283,
+    margin: { top: CONTENT_START_Y + 3, left: MARGIN_L, right: MARGIN_L, bottom: 14 },
+    tableWidth: PAGE_W - MARGIN_L * 2,
     rowPageBreak: 'auto',
-    columnStyles: isTravelExport ? {
-      0: { cellWidth: 10, halign: 'center', overflow: 'visible' },
-      1: { cellWidth: 62, halign: 'left' },
-      2: { cellWidth: 35, halign: 'center', fontSize: 7 },
-      3: { cellWidth: 16, halign: 'center' },
-      4: { cellWidth: 26, halign: 'center' },
-      5: { cellWidth: 22, halign: 'center' },
-      6: { cellWidth: 30, halign: 'center' },
-      7: { cellWidth: 36, halign: 'center' },
-      8: { cellWidth: 46, halign: 'center' }
-    } : {
+    columnStyles: {
       0: { cellWidth: 9, halign: 'center', overflow: 'visible' },
       1: { cellWidth: 42, halign: 'left' },
       2: { cellWidth: 32, halign: 'center', fontSize: 6.5 },
@@ -901,196 +1231,451 @@ async function exportToPDF() {
       10: { cellWidth: 23, halign: 'center' },
       11: { cellWidth: 22, halign: 'center' },
       12: { cellWidth: 26, halign: 'center' }
+    },
+    didDrawPage: function (data) {
+      if (data.pageNumber > 1) {
+        drawPageHeader(doc);
+      }
     }
   });
 
   let finalY = doc.lastAutoTable.finalY + 8;
   const effectiveSales = hasDateFilter ? totalReleaseValue : totalSalesRevenue;
 
-  if (finalY + (isReleaseOnlyFilter ? 50 : 65) > 200) {
+  if (finalY + 65 > FOOTER_Y - 16) {
     doc.addPage();
-    finalY = 20;
+    drawPageHeader(doc);
+    finalY = CONTENT_START_Y + 5;
   }
 
-  if (isReleaseOnlyFilter) {
-    doc.setFontSize(10);
-    doc.setTextColor(15, 23, 42);
-    doc.setFont(undefined, 'bold');
-    doc.text(`Total Released Items: ${sortedItems.length.toLocaleString('en-US')}   |   Total Released Qty (Selected Period): ${totalReleaseQty.toLocaleString('en-US')}`, 7, finalY);
+  doc.setFontSize(10);
+  doc.setTextColor(15, 23, 42);
+  doc.setFont(undefined, 'bold');
+  doc.text(`Total Items: ${sortedItems.length.toLocaleString('en-US')}   |   In Stock Qty: ${totalQty.toLocaleString('en-US')}   |   Total Released Qty: ${(hasDateFilter ? totalReleaseQty : totalSoldQty).toLocaleString('en-US')}`, MARGIN_L, finalY);
 
-    doc.setFontSize(11);
-    doc.setTextColor(16, 185, 129);
-    doc.text(`Total Released Qty Value: ${formatPdfMoney(totalReleaseValue)}`, 7, finalY + 7);
+  doc.setFontSize(11);
+  doc.setTextColor(16, 185, 129);
+  doc.text(`Total Released Qty Value: ${formatPdfMoney(effectiveSales)}`, MARGIN_L, finalY + 14);
+
+  doc.setFontSize(11);
+  doc.setTextColor(2, 132, 199);
+  doc.text(`Grand Total Inventory Value (In-Stock): ${formatPdfMoney(grandTotal)}`, MARGIN_L, finalY + 7);
+
+  // Release history page
+  doc.addPage();
+  drawPageHeader(doc);
+  const rhY = CONTENT_START_Y + 3;
+  doc.setFontSize(14);
+  doc.setTextColor(15, 23, 42);
+  doc.setFont(undefined, 'bold');
+  doc.text(`Complete Release History${dateRangeLabel ? ` (${dateRangeLabel.trim()})` : ''}`, MARGIN_L, rhY);
+
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  doc.setFont(undefined, 'normal');
+  doc.text(`Total released quantity: ${totalReleaseQty}   |   Total released value: ${formatPdfMoney(totalReleaseValue)}`, MARGIN_L, rhY + 7);
+
+  if (releaseHistoryRows.length > 0) {
+    doc.autoTable({
+      head: [['#', 'Item Name', 'Sub-Item', 'Unit Type', 'Date Released', 'Remarks', 'Released\nQty', 'Unit Price', 'Released\nQty Value']],
+      body: releaseHistoryRows,
+      startY: rhY + 13,
+      theme: 'striped',
+      headStyles: {
+        fillColor: [79, 70, 229],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: 7.5,
+        cellPadding: 1.5,
+        halign: 'center',
+        valign: 'middle',
+        overflow: 'linebreak'
+      },
+      styles: {
+        fontSize: 7.5,
+        cellPadding: 1.8,
+        halign: 'center',
+        valign: 'middle',
+        overflow: 'linebreak'
+      },
+      margin: { top: CONTENT_START_Y + 3, left: MARGIN_L, right: MARGIN_L, bottom: 14 },
+      tableWidth: PAGE_W - MARGIN_L * 2,
+      rowPageBreak: 'auto',
+      columnStyles: {
+        0: { cellWidth: 10, halign: 'center', cellPadding: { top: 2, right: 1, bottom: 2, left: 1 } },
+        1: { cellWidth: 46, halign: 'left' },
+        2: { cellWidth: 32, halign: 'center' },
+        3: { cellWidth: 18, halign: 'center' },
+        4: { cellWidth: 38, halign: 'center' },
+        5: { cellWidth: 55, halign: 'center' },
+        6: { cellWidth: 22, halign: 'center' },
+        7: { cellWidth: 31, halign: 'center' },
+        8: { cellWidth: 31, halign: 'center' }
+      },
+      didDrawPage: function (data) {
+        if (data.pageNumber > 1) {
+          drawPageHeader(doc);
+        }
+      }
+    });
   } else {
-    doc.setFontSize(10);
-    doc.setTextColor(15, 23, 42);
-    doc.setFont(undefined, 'bold');
-    doc.text(isTravelExport
-      ? `Total Items: ${sortedItems.length.toLocaleString('en-US')}   |   Total Released Qty: ${(hasDateFilter ? totalReleaseQty : totalSoldQty).toLocaleString('en-US')}`
-      : `Total Items: ${sortedItems.length.toLocaleString('en-US')}   |   In Stock Qty: ${totalQty.toLocaleString('en-US')}   |   Total Released Qty: ${(hasDateFilter ? totalReleaseQty : totalSoldQty).toLocaleString('en-US')}`, 7, finalY);
-
     doc.setFontSize(11);
-    doc.setTextColor(16, 185, 129);
-    doc.text(`Total Released Qty Value: ${formatPdfMoney(effectiveSales)}`, 7, finalY + (isTravelExport ? 7 : 14));
-    if (!isTravelExport) {
-      doc.setFontSize(11);
-      doc.setTextColor(2, 132, 199);
-      doc.text(`Grand Total Inventory Value (In-Stock): ${formatPdfMoney(grandTotal)}`, 7, finalY + 7);
-    }
-  }
-
-  // Signatories
-  let signY = finalY + (isReleaseOnlyFilter || isTravelExport ? 20 : 27);
-  if (signY + 34 > 200) {
-    doc.addPage();
-    signY = 22;
-  }
-
-  doc.setFontSize(9.5);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(71, 85, 105);
-  doc.text('Prepared By:', 7, signY);
-
-  doc.setFontSize(10.5);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(reportSignatories.preparedBy, 7, signY + 6.5);
-
-  doc.setFontSize(9.5);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(71, 85, 105);
-  doc.text('Approved By:', 7, signY + 20);
-
-  doc.setFontSize(10.5);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(15, 23, 42);
-  doc.text(reportSignatories.approvedBy, 7, signY + 26.5);
-
-  doc.setFontSize(9.5);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(71, 85, 105);
-  doc.text('Received By:', 225, signY);
-
-  doc.setDrawColor(203, 213, 225);
-  doc.setLineWidth(0.3);
-  doc.line(225, signY + 14, 285, signY + 14);
-
-  if (!isTravelExport) {
-    doc.addPage();
-    doc.setFontSize(16);
-    doc.setTextColor(15, 23, 42);
-    doc.text(`Complete Release History${dateRangeLabel ? ` (${dateRangeLabel.trim()})` : ''}`, 7, 20);
-
-    doc.setFontSize(9);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Total released quantity: ${totalReleaseQty}   |   Total released value: ${formatPdfMoney(totalReleaseValue)}`, 7, 27);
-
-    if (releaseHistoryRows.length > 0) {
-      doc.autoTable({
-        head: [['#', 'Item Name', 'Sub-Item', 'Unit Type', 'Date Released', 'Remarks', 'Released\nQty', 'Unit Price', 'Released\nQty Value']],
-        body: releaseHistoryRows,
-        startY: 33,
-        theme: 'striped',
-        headStyles: {
-          fillColor: [79, 70, 229],
-          textColor: [255, 255, 255],
-          fontStyle: 'bold',
-          fontSize: 7.5,
-          cellPadding: 1.5,
-          halign: 'center',
-          valign: 'middle',
-          overflow: 'linebreak'
-        },
-        styles: {
-          fontSize: 7.5,
-          cellPadding: 1.8,
-          halign: 'center',
-          valign: 'middle',
-          overflow: 'linebreak'
-        },
-        margin: { left: 7, right: 7 },
-        tableWidth: 283,
-        rowPageBreak: 'auto',
-        columnStyles: {
-          0: { cellWidth: 10, halign: 'center', cellPadding: { top: 2, right: 1, bottom: 2, left: 1 } },
-          1: { cellWidth: 46, halign: 'left' },
-          2: { cellWidth: 32, halign: 'center' },
-          3: { cellWidth: 18, halign: 'center' },
-          4: { cellWidth: 38, halign: 'center' },
-          5: { cellWidth: 55, halign: 'center' },
-          6: { cellWidth: 22, halign: 'center' },
-          7: { cellWidth: 31, halign: 'center' },
-          8: { cellWidth: 31, halign: 'center' }
-        }
-      });
-    } else {
-      doc.setFontSize(11);
-      doc.setTextColor(100, 116, 139);
-      doc.text('No release transactions have been recorded for this period.', 7, 40);
-    }
-
-    doc.addPage();
-    doc.setFontSize(16);
-    doc.setTextColor(15, 23, 42);
-    doc.text(`Complete Edit History${dateRangeLabel ? ` (${dateRangeLabel.trim()})` : ''}`, 7, 20);
-
-    if (editHistoryRows.length > 0) {
-      doc.autoTable({
-        head: [['#', 'Item Name', 'Unit Type', 'Edited At', 'Field Changed', 'Previous Value', 'Updated Value']],
-        body: editHistoryRows,
-        startY: 28,
-        theme: 'striped',
-        headStyles: {
-          fillColor: [2, 132, 199],
-          textColor: [255, 255, 255],
-          fontStyle: 'bold',
-          fontSize: 7.5,
-          cellPadding: 1.5,
-          halign: 'center',
-          valign: 'middle',
-          overflow: 'linebreak'
-        },
-        styles: {
-          fontSize: 7.5,
-          cellPadding: 1.8,
-          halign: 'center',
-          valign: 'middle',
-          overflow: 'linebreak'
-        },
-        margin: { left: 7, right: 7 },
-        tableWidth: 283,
-        rowPageBreak: 'auto',
-        columnStyles: {
-          0: { cellWidth: 10, halign: 'center', cellPadding: { top: 2, right: 1, bottom: 2, left: 1 } },
-          1: { cellWidth: 52, halign: 'left' },
-          2: { cellWidth: 20, halign: 'center' },
-          3: { cellWidth: 40, halign: 'center' },
-          4: { cellWidth: 35, halign: 'center' },
-          5: { cellWidth: 63, halign: 'center' },
-          6: { cellWidth: 63, halign: 'center' }
-        }
-      });
-    } else {
-      doc.setFontSize(11);
-      doc.setTextColor(100, 116, 139);
-      doc.text('No edits have been recorded for this period.', 7, 40);
-    }
+    doc.text('No release transactions have been recorded for this period.', MARGIN_L, rhY + 20);
   }
 
+  // ── Draw footers on all pages ─────────────────────────────────────────────
+  const totalPdfPages = doc.internal.getNumberOfPages();
+  for (let p = 1; p <= totalPdfPages; p++) {
+    doc.setPage(p);
+    drawPageFooter(doc, p, totalPdfPages);
+  }
+
+  const filename = `inventory_summary_${fileDateSuffix}.pdf`;
+  doc.save(filename);
+
+  showToast(hasDateFilter
+    ? (isSameDayRange
+      ? `Filtered PDF export for ${formatDate(dateFromVal)} generated.`
+      : `Filtered PDF export (${dateFromVal || 'Start'} to ${dateToVal || 'Now'}) generated.`)
+    : 'Detailed PDF export generated with release history.');
+}
+
+// ── Acknowledgement Receipt Excel Export (Portrait) ─────────────────────────
+// xlsx-js-style does not serialize native page setup or header/footer settings.
+// Add those OOXML parts using the ZIP utilities already bundled with XLSX.
+function saveAcknowledgementReceiptWorkbook(wb, filename) {
+  const archive = XLSX.CFB.read(new Uint8Array(XLSX.write(wb, { bookType: 'xlsx', type: 'array' })), { type: 'array' });
+  const readPart = name => new TextDecoder().decode(XLSX.CFB.find(archive, '/' + name).content);
+  const writePart = (name, xml) => XLSX.CFB.utils.cfb_add(archive, '/' + name, new TextEncoder().encode(xml));
+  const escapeXml = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const footer = '&L&"Arial"&8&K305596\nDICT Regional Office 1\n3F Kenny Plaza Bldg., M.L. Quezon Ave.,\nSan Fernando City, La Union 2500\n'
+    + '&R&"Arial"&8&K305596\nhttps://www.dict.gov.ph\nregion1@dict.gov.ph\n\n&IAcknowledgement Receipt | Page &B&P of &N'
+    + '&C&8&G\n\n\n\n';
+  const relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  let sheetXml = readPart('xl/worksheets/sheet1.xml');
+  sheetXml = sheetXml.replace(/<pageSetup\b[^>]*\/>/g, '');
+  // Insert sheetPr before dimension/sheetViews, and the print parts after pageMargins.
+  sheetXml = sheetXml.replace(/(<worksheet\b[^>]*>)/, '$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>');
+  const printXml = '<pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/>'
+    + `<headerFooter alignWithMargins="1" scaleWithDoc="0"><oddFooter>${escapeXml(footer)}</oddFooter></headerFooter>`;
+  sheetXml = sheetXml.replace(/<pageMargins\b[^>]*\/>/, match => match + printXml);
+  sheetXml = sheetXml.replace('</worksheet>', `<legacyDrawingHF xmlns:r="${relNs}" r:id="receiptFooterDrawing"/></worksheet>`);
+  writePart('xl/worksheets/sheet1.xml', sheetXml);
+
+  // A stretched blue pixel makes a true separator rule in Excel's repeated footer.
+  // The center section is padded to the same five lines as the address/contact sections.
+  const packageNs = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  const rulePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAANSURBVBhXY6iYff0/AAZjAuo8J/uVAAAAAElFTkSuQmCC';
+  XLSX.CFB.utils.cfb_add(archive, 'xl/media/receipt-footer-rule.png', Uint8Array.from(atob(rulePng), ch => ch.charCodeAt(0)));
+  writePart('xl/drawings/receiptFooter.vml', '<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">'
+    + '<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>'
+    + '<v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" o:preferrelative="t" path="m0,0l21600,0,21600,21600,0,21600xe" filled="f" stroked="f">'
+    + '<v:stroke joinstyle="miter"/><v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/><o:lock v:ext="edit" aspectratio="t"/></v:shapetype>'
+    + '<v:shape id="CF" o:spid="_x0000_s1025" type="#_x0000_t75" style="position:absolute;margin-left:0;margin-top:0;width:379.84pt;height:0.7pt;z-index:1">'
+    + '<v:imagedata o:relid="receiptFooterRule" o:title="Footer separator"/><o:lock v:ext="edit" rotation="t"/></v:shape></xml>');
+  writePart('xl/drawings/_rels/receiptFooter.vml.rels', `<Relationships xmlns="${packageNs}"><Relationship Id="receiptFooterRule" Type="${relNs}/image" Target="../media/receipt-footer-rule.png"/></Relationships>`);
+  const sheetRelsPath = 'xl/worksheets/_rels/sheet1.xml.rels';
+  const sheetRels = XLSX.CFB.find(archive, '/' + sheetRelsPath)
+    ? readPart(sheetRelsPath) : `<Relationships xmlns="${packageNs}"></Relationships>`;
+  writePart(sheetRelsPath, sheetRels.replace('</Relationships>', `<Relationship Id="receiptFooterDrawing" Type="${relNs}/vmlDrawing" Target="../drawings/receiptFooter.vml"/></Relationships>`));
+  let contentTypes = readPart('[Content_Types].xml');
+  if (!/Extension="vml"/.test(contentTypes)) contentTypes = contentTypes.replace('</Types>', '<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/></Types>');
+  if (!/Extension="png"/.test(contentTypes)) contentTypes = contentTypes.replace('</Types>', '<Default Extension="png" ContentType="image/png"/></Types>');
+  writePart('[Content_Types].xml', contentTypes);
+
+  const bytes = XLSX.CFB.write(archive, { type: 'array', fileType: 'zip', compression: true });
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportAcknowledgementReceiptToExcel(sortedItems, dateFromVal, dateToVal, hasDateFilter, isSameDayRange, isReleasedOnly = false) {
+  const wb = XLSX.utils.book_new();
+  const wsData = [];
+  const rowMeta = [];
+
+  const mkBorder = (c = '000000') => ({
+    top: { style: 'thin', color: { rgb: c } },
+    bottom: { style: 'thin', color: { rgb: c } },
+    left: { style: 'thin', color: { rgb: c } },
+    right: { style: 'thin', color: { rgb: c } }
+  });
+
+  // Top header matching official DICT letterhead
+  wsData.push(['REPUBLIC OF THE PHILIPPINES']);
+  rowMeta.push({ type: 'top-title-1' });
+
+  wsData.push(['DEPARTMENT OF INFORMATION AND COMMUNICATIONS TECHNOLOGY']);
+  rowMeta.push({ type: 'top-title-2' });
+
+  wsData.push([]);
+  rowMeta.push({ type: 'empty' });
+
+  wsData.push(['ACKNOWLEDGEMENT RECIEPT']);
+  rowMeta.push({ type: 'doc-title' });
+
+  wsData.push(['Date: ________________________']);
+  rowMeta.push({ type: 'text-left' });
+
+  wsData.push(['I, ____________________________________________, hereby acknowledge the receipt of the following Materials/items from the department of the information and communications Technology on this day, ____________________:']);
+  rowMeta.push({ type: 'ack-body' });
+
+  wsData.push([]);
+  rowMeta.push({ type: 'empty' });
+
+  // Table header matching image (5 columns)
+  const tableHeaders = ['Item No.', 'Description of Item', 'Quantity', 'Serial Number', 'Remarks'];
+  wsData.push(tableHeaders);
+  rowMeta.push({ type: 'table-header' });
+
+  let rowNum = 0;
+  let totalReleasedQty = 0;
+  let totalReleasedValue = 0;
+
+  sortedItems.forEach((item) => {
+    const hasSubs = Array.isArray(item.subItems) && item.subItems.length > 0;
+    const itemReleasedQty = getItemReleasedQuantity(item);
+    const serialMeta = item._serialExportMeta || _getSerialExportMeta(item.serialNumber, getMainItemReleaseHistory(item));
+    const remarks = isReleasedOnly ? (item.inventoryRemarks || item.remarks || (getLatestRelease(item)?.remarks || '')) : '';
+
+    if (!hasSubs) {
+      if (isReleasedOnly && itemReleasedQty <= 0) return;
+      rowNum++;
+      totalReleasedQty += itemReleasedQty;
+      totalReleasedValue += getItemReleasedValue(item);
+      const dispSerial = isReleasedOnly
+        ? getReleasedItemSerialText(item, getReleaseHistory(item), dateFromVal, dateToVal)
+        : _getXlsSerialText(serialMeta);
+      wsData.push([
+        `${rowNum}.`,
+        item.name + (item.description ? '\n' + item.description : ''),
+        isReleasedOnly ? itemReleasedQty : Number(item.quantity) || 0,
+        dispSerial,
+        remarks
+      ]);
+      rowMeta.push({ type: 'table-data', serialMeta: isReleasedOnly ? null : serialMeta });
+    } else {
+      const subItemsToProcess = isReleasedOnly
+        ? item.subItems.filter(sub => getReleasedQuantity(getSubItemReleaseHistory(item, sub)) > 0)
+        : item.subItems;
+
+      if (isReleasedOnly && subItemsToProcess.length === 0) return;
+
+      rowNum++;
+      wsData.push([
+        `${rowNum}.`,
+        item.name + (item.description ? '\n' + item.description : ''),
+        isReleasedOnly ? '' : Number(item.quantity) || 0,
+        isReleasedOnly ? '-' : _getXlsSerialText(serialMeta),
+        remarks
+      ]);
+      rowMeta.push({ type: 'table-data-group', serialMeta: isReleasedOnly ? null : serialMeta });
+
+      subItemsToProcess.forEach((sub, subIdx) => {
+        const subReleaseHistory = getSubItemReleaseHistory(item, sub);
+        const subReleasedQty = getReleasedQuantity(subReleaseHistory);
+        const subPrice = Number(sub.price) || 0;
+        totalReleasedQty += subReleasedQty;
+        totalReleasedValue += (subReleasedQty * subPrice);
+        const subSerialMeta = sub._serialExportMeta || _getSerialExportMeta(sub.serialNumber, subReleaseHistory);
+        const dispSubSerial = isReleasedOnly
+          ? getReleasedItemSerialText(sub, subReleaseHistory, dateFromVal, dateToVal)
+          : _getXlsSerialText(subSerialMeta);
+        const subRemarks = isReleasedOnly ? (sub.inventoryRemarks || sub.remarks || '') : '';
+        wsData.push([
+          `${rowNum}.${subIdx + 1}`,
+          '>> ' + sub.name + (sub.description ? '\n' + sub.description : ''),
+          isReleasedOnly ? subReleasedQty : Number(sub.quantity) || 0,
+          dispSubSerial,
+          subRemarks
+        ]);
+        rowMeta.push({ type: 'table-data', serialMeta: isReleasedOnly ? null : subSerialMeta });
+      });
+    }
+  });
+
+  if (isReleasedOnly && rowNum === 0) {
+    showToast('No released items found to export in Acknowledgement Receipt.', true);
+    return;
+  }
+
+  // Empty row
+  wsData.push([]);
+  rowMeta.push({ type: 'empty' });
+
+  // Last Part: Responsibility Statement & Signatures (Matching Image 5)
+  wsData.push(['These items have been received in good condition and will be used/stored/handled as agreed upon. I accept responsibility for the items listed above.']);
+  rowMeta.push({ type: 'resp-statement' });
+
+  wsData.push([]);
+  rowMeta.push({ type: 'empty' });
+
+  ['Received By:', 'Issued By:'].forEach(heading => {
+    wsData.push([heading]);
+    rowMeta.push({ type: 'sig-head' });
+
+    wsData.push(['Name:', '_____________________________________________']);
+    rowMeta.push({ type: 'sig-field' });
+
+    wsData.push(['Signature:', '__________________________________________']);
+    rowMeta.push({ type: 'sig-field' });
+
+    wsData.push(['Destination:', '________________________________________']);
+    rowMeta.push({ type: 'sig-field' });
+
+    wsData.push(['Contact No.:', '_______________________________________']);
+    rowMeta.push({ type: 'sig-field' });
+
+    wsData.push([]);
+    rowMeta.push({ type: 'empty' });
+  });
+
+  // Build sheet
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // Column widths (Item No., Description, Quantity, Serial Number, Remarks)
+  const colWidths = [12, 45, 12, 35, 25];
+  ws['!cols'] = colWidths.map(w => ({ wch: w }));
+
+  // Inset print margins and footer position match the official receipt template.
+  // Excel stores margins in inches. Leave 35 mm below content for the footer.
+  ws['!margins'] = { left: 44 / 25.4, right: 32 / 25.4, top: 8 / 25.4, bottom: 35 / 25.4, header: 3 / 25.4, footer: 14 / 25.4 };
+
+  // Merges
+  const merges = [];
+  rowMeta.forEach((meta, r) => {
+    if (meta.type === 'top-title-1' || meta.type === 'top-title-2' || meta.type === 'doc-title' || meta.type === 'text-left' || meta.type === 'ack-body' || meta.type === 'resp-statement') {
+      merges.push({ s: { r, c: 0 }, e: { r, c: 4 } });
+    } else if (meta.type === 'sig-head') {
+      merges.push({ s: { r, c: 0 }, e: { r, c: 4 } });
+    } else if (meta.type === 'sig-field') {
+      merges.push({ s: { r, c: 1 }, e: { r, c: 4 } });
+    }
+  });
+  ws['!merges'] = merges;
+
+  // Styling cells
+  rowMeta.forEach((meta, r) => {
+    if (meta.type === 'empty') return;
+    for (let c = 0; c < 5; c++) {
+      const ref = XLSX.utils.encode_cell({ r, c });
+      if (!ws[ref]) ws[ref] = { v: '', t: 's' };
+
+      switch (meta.type) {
+        case 'top-title-1':
+          ws[ref].s = {
+            font: { bold: true, sz: 10, color: { rgb: '0F4C81' } },
+            alignment: { horizontal: 'center', vertical: 'center' }
+          };
+          break;
+        case 'top-title-2':
+          ws[ref].s = {
+            font: { bold: true, sz: 11, color: { rgb: '0F4C81' } },
+            alignment: { horizontal: 'center', vertical: 'center' }
+          };
+          break;
+        case 'doc-title':
+          ws[ref].s = {
+            font: { bold: true, sz: 14, color: { rgb: '000000' } },
+            alignment: { horizontal: 'center', vertical: 'center' }
+          };
+          break;
+        case 'text-left':
+          ws[ref].s = {
+            font: { sz: 10, color: { rgb: '000000' } },
+            alignment: { horizontal: 'left', vertical: 'center' }
+          };
+          break;
+        case 'ack-body':
+        case 'resp-statement':
+          ws[ref].s = {
+            font: { sz: 10, color: { rgb: '000000' } },
+            alignment: { horizontal: 'left', vertical: 'top', wrapText: true }
+          };
+          break;
+        case 'sig-head':
+          ws[ref].s = {
+            font: { bold: true, sz: 10.5, color: { rgb: '000000' } },
+            alignment: { horizontal: 'left', vertical: 'center' }
+          };
+          break;
+        case 'sig-field':
+          ws[ref].s = {
+            font: { sz: 10, bold: (c === 0), color: { rgb: '000000' } },
+            alignment: { horizontal: 'left', vertical: 'center' }
+          };
+          break;
+        case 'table-header':
+          ws[ref].s = {
+            font: { bold: true, sz: 10, color: { rgb: '000000' } },
+            fill: { patternType: 'solid', fgColor: { rgb: 'F8FAFC' } },
+            alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+            border: mkBorder('000000')
+          };
+          break;
+        case 'table-data':
+        case 'table-data-group':
+          ws[ref].s = {
+            font: { sz: 9.5, bold: (c === 0 || meta.type === 'table-data-group'), color: { rgb: '000000' } },
+            fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFF' } },
+            alignment: {
+              horizontal: (c === 0 || c === 2) ? 'center' : 'left',
+              vertical: 'top',
+              wrapText: true
+            },
+            border: mkBorder('000000')
+          };
+          break;
+      }
+      if (c === 3) _styleXlsDeductedSerial(ws[ref], meta.serialMeta);
+    }
+  });
+
+  // Dynamic row heights
+  ws['!rows'] = rowMeta.map((meta, r) => {
+    if (meta.type === 'top-title-1') return { hpt: 18 };
+    if (meta.type === 'top-title-2') return { hpt: 20 };
+    if (meta.type === 'doc-title') return { hpt: 24 };
+    if (meta.type === 'text-left') return { hpt: 18 };
+    if (meta.type === 'ack-body') return { hpt: 38 };
+    if (meta.type === 'resp-statement') return { hpt: 32 };
+    if (meta.type === 'sig-head') return { hpt: 22 };
+    if (meta.type === 'sig-field') return { hpt: 20 };
+    if (meta.type === 'table-header') return { hpt: 26 };
+    if (meta.type === 'empty') return { hpt: 8 };
+    if (meta.type === 'table-data' || meta.type === 'table-data-group') {
+      const row = wsData[r];
+      let maxLines = 1;
+      row.forEach((cell, ci) => {
+        if (!cell) return;
+        const text = String(cell);
+        const cw = (colWidths[ci] || 15) - 2;
+        const lines = text.split('\n');
+        let count = 0;
+        lines.forEach(l => { count += Math.max(1, Math.ceil(l.length / (cw || 1))); });
+        if (count > maxLines) maxLines = count;
+      });
+      return { hpt: Math.min(300, Math.max(20, maxLines * 14 + 6)) };
+    }
+    return { hpt: 18 };
+  });
+
+  XLSX.utils.book_append_sheet(wb, ws, isReleasedOnly ? 'Released Receipt' : 'Acknowledgement Receipt');
   const fileDateSuffix = (dateFromVal && dateToVal && !isSameDayRange)
     ? `${dateFromVal}_to_${dateToVal}`
     : (dateFromVal || dateToVal || new Date().toISOString().slice(0, 10));
-  const filename = `${isTravelExport ? 'travel_inventory' : 'inventory_summary'}_${fileDateSuffix}.pdf`;
-  doc.save(filename);
-  addToExportLog('pdf', filename);
+  const filename = isReleasedOnly
+    ? `acknowledgement_receipt_released_${fileDateSuffix}.xlsx`
+    : `acknowledgement_receipt_${fileDateSuffix}.xlsx`;
+  saveAcknowledgementReceiptWorkbook(wb, filename);
 
-  showToast(isTravelExport
-    ? `Travel inventory ${hasDateFilter ? 'filtered ' : ''}PDF export generated.`
-    : (hasDateFilter
-      ? (isSameDayRange
-        ? `Filtered PDF export for ${formatDate(dateFromVal)} generated.`
-        : `Filtered PDF export (${dateFromVal || 'Start'} to ${dateToVal || 'Now'}) generated.`)
-      : 'Detailed PDF export generated with release and edit history.'));
+  showToast(`Acknowledgement Receipt (${isReleasedOnly ? 'Released Items' : 'All Items'})${hasDateFilter ? ' filtered' : ''} Excel export generated successfully.`);
 }
 
 // ── Excel Export Function ────────────────────────────────────────────────────
@@ -1106,22 +1691,26 @@ function exportToExcel() {
 
   const dateFromVal = document.getElementById('exportDateFrom')?.value || '';
   const dateToVal = document.getElementById('exportDateTo')?.value || '';
-  const dateFilterType = document.getElementById('exportDateFilterType')?.value || 'any';
-  const isTravelExport = document.getElementById('exportContentScope')?.value === 'travel';
+  const scopeVal = document.getElementById('exportContentScope')?.value || 'full';
+  const isTravelExport = scopeVal === 'travel' || scopeVal === 'travel_released';
+  const isReleasedOnly = scopeVal === 'travel_released';
   const hasDateFilter = Boolean(dateFromVal || dateToVal);
 
-  let sortedItems = [...items];
-  if (hasDateFilter) {
-    sortedItems = sortedItems.filter(item => itemMatchesExportDateRange(item, dateFromVal, dateToVal, dateFilterType));
-    if (sortedItems.length === 0) {
-      showToast('No items match the selected export date range.', true);
-      return;
-    }
+  if (!isExportRangeValid(dateFromVal, dateToVal)) {
+    showToast('From date must be on or before To date.', true);
+    return;
+  }
+  const sortedItems = getExportItems(items, dateFromVal, dateToVal, scopeVal);
+  if (!sortedItems.length) {
+    showToast(isReleasedOnly ? 'No releases match the selected date range.' : 'No items match the selected export date range.', true);
+    return;
   }
 
   let dateRangeLabel = '';
   const isSameDayRange = Boolean(dateFromVal && dateToVal && dateFromVal === dateToVal);
-  if (dateFromVal && dateToVal && !isSameDayRange) {
+  if (isSameDayRange) {
+    dateRangeLabel = ` [Date: ${dateFromVal}]`;
+  } else if (dateFromVal && dateToVal) {
     dateRangeLabel = ` [Period: ${dateFromVal} to ${dateToVal}]`;
   } else if (dateFromVal && !dateToVal) {
     dateRangeLabel = ` [Period: From ${dateFromVal}]`;
@@ -1129,11 +1718,20 @@ function exportToExcel() {
     dateRangeLabel = ` [Period: Up to ${dateToVal}]`;
   }
 
+  // If Acknowledgement Receipt is selected, export using dedicated portrait format
+  if (isTravelExport) {
+    exportAcknowledgementReceiptToExcel(sortedItems, dateFromVal, dateToVal, hasDateFilter, isSameDayRange, isReleasedOnly);
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // FULL INVENTORY (PRINT ALL) — Landscape A4
+  // ══════════════════════════════════════════════════════════════════════════
   const wb = XLSX.utils.book_new();
   const wsData = [];
   const rowMeta = [];
 
-  const S_INV = 'inv', S_REL = 'rel', S_EDIT = 'edit', S_TOT = 'tot';
+  const S_INV = 'inv', S_REL = 'rel', S_TOT = 'tot';
 
   function addRow(values, type, section, opts = {}) {
     wsData.push(values);
@@ -1141,13 +1739,12 @@ function exportToExcel() {
   }
 
   // -- INVENTORY SUMMARY --
-  const isReleaseOnlyFilter = hasDateFilter && dateFilterType === 'released';
-  const inventoryColumns = isTravelExport
-    ? ['#', 'Date Added', 'Item Name', 'Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Released Qty', 'Released Qty Value', 'Date Released', 'Remarks']
-    : ['#', 'Date Added', 'Item Name', 'Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Total Qty',
-      'Total Qty Value', 'Released Qty', 'Released Qty Value', 'Remaining In Stock Qty', 'Remaining In Stock Qty Value', 'Date Released', 'Item Remarks'];
+  const inventoryColumns = [
+    '#', 'Date Added', 'Item Name', 'Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Total Qty',
+    'Total Qty Value', 'Released Qty', 'Released Qty Value', 'Remaining In Stock Qty', 'Remaining In Stock Qty Value', 'Date Released', 'Item Remarks'
+  ];
   const inventoryColumnCount = inventoryColumns.length;
-  addRow([`${isTravelExport ? 'TRAVEL INVENTORY' : (isReleaseOnlyFilter ? 'INVENTORY RELEASE & DISBURSEMENT SUMMARY' : 'INVENTORY SUMMARY')}${dateRangeLabel}`], 'title', S_INV, { rgb: '0F4C81', cols: inventoryColumnCount });
+  addRow([`INVENTORY SUMMARY${dateRangeLabel}`], 'title', S_INV, { rgb: '0F4C81', cols: inventoryColumnCount });
   addRow(inventoryColumns, 'header', S_INV, { rgb: '0284C7', cols: inventoryColumnCount });
 
   let totalQty = 0, totalSoldQty = 0, totalQtyValue = 0, totalReleasedValue = 0, grandTotal = 0, totalReleaseValue = 0, totalReleaseQty = 0, invIdx = 0;
@@ -1275,84 +1872,7 @@ function exportToExcel() {
   if (relIdx === 0) addRow(['No release transactions match this date range.'], 'message', S_REL, { cols: 9 });
   addRow([], 'empty', null);
 
-  // -- COMPLETE EDIT HISTORY --
-  addRow([`COMPLETE EDIT HISTORY${dateRangeLabel}`], 'title', S_EDIT, { rgb: '0369A1', cols: 11 });
-  addRow(['#', 'Edited Date & Time', 'Item Name', 'Field Changed', 'Before', 'After', 'Unit Type'],
-    'header', S_EDIT, { rgb: '0C5E9E', cols: 7 });
 
-  let editIdx = 0;
-  sortedItems.forEach(item => {
-    getEditHistory(item).forEach(edit => {
-      if (hasDateFilter && !isDateWithinRange(edit.changedAt, dateFromVal, dateToVal)) {
-        return;
-      }
-      (edit.changes || []).forEach(change => {
-        editIdx++;
-        addRow([editIdx, formatDateTime(edit.changedAt), item.name, change.label || 'Change',
-          change.from || '-', change.to || '-', item.unitType || item.category || 'pcs'],
-          editIdx % 2 === 1 ? 'data-odd' : 'data-even', S_EDIT, { cols: 7 });
-      });
-    });
-  });
-  if (!editIdx) addRow(['No edits match this date range.'], 'message', S_EDIT, { cols: 7 });
-  addRow([], 'empty', null);
-
-  // -- REPORT TOTALS --
-  addRow(['REPORT TOTALS'], 'title', S_TOT, { rgb: '064E3B', cols: 3 });
-  const effectiveSales = hasDateFilter ? totalReleaseValue : totalSalesRevenue;
-
-  if (isReleaseOnlyFilter) {
-    [
-      ['Total Released Items', sortedItems.length.toLocaleString('en-US')],
-      ['Total Released Quantity (Selected Period)', totalReleaseQty.toLocaleString('en-US')],
-      ['Total Released Qty Value', `PHP ${totalReleaseValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`]
-    ].forEach(row => addRow(row, 'totals', S_TOT, { cols: 2 }));
-  } else {
-    [
-      ['Total Items', sortedItems.length.toLocaleString('en-US')],
-      ['Total In-Stock Quantity', totalQty.toLocaleString('en-US')],
-      ['Grand Total Inventory Value (In-Stock)', `PHP ${grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
-      ['Total Released Quantity', (hasDateFilter ? totalReleaseQty : totalSoldQty).toLocaleString('en-US')],
-      ['Total Released Qty Value', `PHP ${effectiveSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`]
-    ].forEach(row => addRow(row, 'totals', S_TOT, { cols: 2 }));
-  }
-  addRow([], 'empty', null);
-  addRow(['Prepared By', reportSignatories.preparedBy], 'totals', S_TOT, { cols: 2 });
-  addRow(['Approved By', reportSignatories.approvedBy], 'totals', S_TOT, { cols: 2 });
-  addRow(['Received By', '________________________'], 'totals', S_TOT, { cols: 2 });
-
-  if (isTravelExport) {
-    const travelColumnIndexes = [0, 1, 2, 3, 4, 5, 6, 9, 10, 13, 14];
-    const travelRows = [];
-    const travelMeta = [];
-    wsData.forEach((row, index) => {
-      if (rowMeta[index].section !== S_INV) return;
-      travelRows.push(rowMeta[index].type === 'title' || rowMeta[index].type === 'header'
-        ? row
-        : travelColumnIndexes.map(columnIndex => row[columnIndex]));
-      travelMeta.push({ ...rowMeta[index], cols: inventoryColumnCount });
-    });
-    travelRows.push([]);
-    travelMeta.push({ type: 'empty', section: null });
-    travelRows.push(['TRAVEL INVENTORY TOTALS']);
-    travelMeta.push({ type: 'title', section: S_TOT, rgb: '064E3B', cols: 2 });
-    travelRows.push(['Total Released Items', sortedItems.length.toLocaleString('en-US')]);
-    travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-    travelRows.push(['Total Released Quantity (Selected Period)', (hasDateFilter ? totalReleaseQty : totalSoldQty).toLocaleString('en-US')]);
-    travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-    travelRows.push(['Total Released Qty Value', `PHP ${(hasDateFilter ? totalReleaseValue : totalSalesRevenue).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`]);
-    travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-    travelRows.push([]);
-    travelMeta.push({ type: 'empty', section: null });
-    travelRows.push(['Prepared By', reportSignatories.preparedBy]);
-    travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-    travelRows.push(['Approved By', reportSignatories.approvedBy]);
-    travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-    travelRows.push(['Received By', '________________________']);
-    travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-    wsData.splice(0, wsData.length, ...travelRows);
-    rowMeta.splice(0, rowMeta.length, ...travelMeta);
-  }
 
   // -- BUILD WORKSHEET --
   const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -1368,16 +1888,9 @@ function exportToExcel() {
     [S_INV]: ['center', 'center', 'left', 'left', 'left', 'center', 'right', 'center', 'right', 'center', 'right', 'center', 'right', 'center', 'left'],
     // #, Date Released & Time, Item Name, Sub-Item, Remarks, Unit Type, Released Qty, Unit Price, Released Qty Value
     [S_REL]: ['center', 'left', 'left', 'left', 'left', 'center', 'center', 'right', 'right'],
-    // #, Edited Date & Time, Item Name, Field Changed, Before, After, Unit Type
-    [S_EDIT]: ['center', 'left', 'left', 'left', 'left', 'left', 'center'],
     [S_TOT]: ['left', 'right']
   };
   function ha(c, section, type) {
-    if (isTravelExport && section === S_INV) {
-      if (c === 2 || c === 3 || c === 4 || c === 10) return 'left';
-      if (c === 6 || c === 8) return 'right';
-      return 'center';
-    }
     if (type === 'title' || type === 'message') return 'left';
     const map = COL_ALIGN[section];
     return (map && map[c]) || 'left';
@@ -1385,7 +1898,7 @@ function exportToExcel() {
 
   rowMeta.forEach(({ type, section, rgb, cols }, r) => {
     if (type === 'empty') return;
-    const nc = cols || 11;
+    const nc = cols || 15;
     for (let c = 0; c < nc; c++) {
       const ref = XLSX.utils.encode_cell({ r, c });
       if (!ws[ref]) ws[ref] = { v: '', t: 's' };
@@ -1393,9 +1906,7 @@ function exportToExcel() {
 
       // Apply Excel number format for numeric cells so decimals & commas display cleanly
       if (typeof ws[ref].v === 'number') {
-        const isCurrencyCol = isTravelExport
-          ? (section === S_INV && (c === 6 || c === 8))
-          : ((section === S_INV && [6, 8, 10, 12].includes(c)) || (section === S_REL && (c === 7 || c === 8)));
+        const isCurrencyCol = (section === S_INV && [6, 8, 10, 12].includes(c)) || (section === S_REL && (c === 7 || c === 8));
         ws[ref].z = isCurrencyCol ? '#,##0.00' : '#,##0';
       }
 
@@ -1469,15 +1980,16 @@ function exportToExcel() {
   // Merge title + message rows across all columns
   ws['!merges'] = rowMeta.reduce((acc, { type, cols }, r) => {
     if (type === 'title' || type === 'message')
-      acc.push({ s: { r, c: 0 }, e: { r, c: (cols || 11) - 1 } });
+      acc.push({ s: { r, c: 0 }, e: { r, c: (cols || 15) - 1 } });
     return acc;
   }, []);
 
-  // Col widths: #, Date, Item Name, Description/Sub-Item, Serial/Remarks, Unit Type, ...
-  const colWidths = isTravelExport
-    ? [8, 22, 38, 38, 26, 12, 14, 14, 18, 20, 30]
-    : [8, 22, 38, 38, 26, 12, 14, 12, 16, 13, 16, 22, 24, 18, 25];
+  // Col widths for Full Inventory (15 columns)
+  const colWidths = [8, 22, 38, 38, 26, 12, 14, 12, 16, 13, 16, 22, 24, 18, 25];
   ws['!cols'] = colWidths.map(w => ({ wch: w }));
+
+  // Page setup: Landscape A4 for Full Inventory (Print All)
+  ws['!pageSetup'] = { orientation: 'landscape', paperSize: 9 };
 
   // Dynamic row heights — count actual lines per row to avoid clipping wrapped text
   function calcRowHpt(rowIdx) {
@@ -1507,17 +2019,14 @@ function exportToExcel() {
   const fileDateSuffix = (dateFromVal && dateToVal && !isSameDayRange)
     ? `${dateFromVal}_to_${dateToVal}`
     : (dateFromVal || dateToVal || new Date().toISOString().slice(0, 10));
-  const filename = `${isTravelExport ? 'travel_inventory' : 'inventory_report'}_${fileDateSuffix}.xlsx`;
+  const filename = `inventory_report_${fileDateSuffix}.xlsx`;
   XLSX.writeFile(wb, filename);
-  addToExportLog('excel', filename);
 
-  showToast(isTravelExport
-    ? `Travel inventory ${hasDateFilter ? 'filtered ' : ''}Excel export generated successfully.`
-    : (hasDateFilter
-      ? (isSameDayRange
-        ? `Filtered Excel export for ${dateFromVal} generated successfully.`
-        : `Filtered Excel export (${dateFromVal || 'Start'} to ${dateToVal || 'Now'}) generated successfully.`)
-      : 'Color-formatted Excel export generated successfully.'));
+  showToast(hasDateFilter
+    ? (isSameDayRange
+      ? `Filtered Excel export for ${dateFromVal} generated successfully.`
+      : `Filtered Excel export (${dateFromVal || 'Start'} to ${dateToVal || 'Now'}) generated successfully.`)
+    : 'Full Inventory Excel export generated successfully.');
 }
 
 // -- Preview Table --
@@ -1530,17 +2039,22 @@ function renderPreviewTable() {
 
   const dateFromVal = document.getElementById('exportDateFrom')?.value || '';
   const dateToVal = document.getElementById('exportDateTo')?.value || '';
-  const dateFilterType = document.getElementById('exportDateFilterType')?.value || 'any';
+  const scopeVal = document.getElementById('exportContentScope')?.value || 'full';
+  const isReleasedOnly = scopeVal === 'travel_released';
   const hasDateFilter = Boolean(dateFromVal || dateToVal);
 
-  const filtered = hasDateFilter
-    ? items.filter(item => itemMatchesExportDateRange(item, dateFromVal, dateToVal, dateFilterType))
-    : [...items];
+  const filtered = getExportItems(items, dateFromVal, dateToVal, scopeVal);
 
   if (subtitle) {
-    subtitle.textContent = hasDateFilter
-      ? 'Showing records filtered by selected date range'
-      : 'Showing all inventory records';
+    if (isReleasedOnly) {
+      subtitle.textContent = hasDateFilter
+        ? 'Showing released records filtered by selected date range'
+        : 'Showing all released inventory records';
+    } else {
+      subtitle.textContent = hasDateFilter
+        ? 'Showing records filtered by selected date range'
+        : 'Showing all inventory records';
+    }
   }
 
   let tblTotalQty = 0, tblTotalQtyValue = 0, tblReleasedQty = 0, tblReleasedValue = 0, tblRemainingQty = 0, tblRemainingValue = 0;
@@ -1552,7 +2066,6 @@ function renderPreviewTable() {
     const lineTotal = hasSubs ? (subSum > 0 ? subSum : (Number(item.price) || 0) * (Number(item.quantity) || 0)) : (Number(item.price) || 0) * (Number(item.quantity) || 0);
     const latestRelease = getLatestRelease(item);
     const releaseHistory = getReleaseHistory(item);
-    const editHistory = getEditHistory(item);
     const itemReleasedQty = getItemReleasedQuantity(item);
     const inStockQty = hasSubs
       ? item.subItems.reduce((s, sub) => s + (Number(sub.quantity) || 0), 0)
@@ -1627,8 +2140,7 @@ function renderPreviewTable() {
       '<td class="py-2 px-2 text-center text-[10px] text-slate-600 whitespace-nowrap">' + dateRelStr + '</td>' +
       '<td class="py-2 px-2 text-center text-[10px] whitespace-nowrap">' +
       (releaseHistory.length ? '<button type="button" onclick="openReleaseHistory(' + idx + ')" class="block mx-auto text-[10px] font-semibold text-brand-600 hover:text-brand-700 hover:underline cursor-pointer">View release history</button>' : '') +
-      (editHistory.length ? '<button type="button" onclick="openEditHistory(' + idx + ')" class="' + (releaseHistory.length ? 'mt-1 ' : '') + 'block mx-auto text-[10px] font-semibold text-indigo-600 hover:text-indigo-700 hover:underline cursor-pointer">View edit history</button>' : '') +
-      (!releaseHistory.length && !editHistory.length ? '<span class="text-slate-400">-</span>' : '') +
+      (!releaseHistory.length ? '<span class="text-slate-400">-</span>' : '') +
       '</td>' +
       '<td class="py-2 px-2 text-[10px] text-slate-600 text-center break-words min-w-[200px] max-w-[280px]">' + (item.inventoryRemarks ? item.inventoryRemarks : '<span class="text-slate-400">-</span>') + '</td>' +
       '</tr>'
@@ -1772,57 +2284,6 @@ function closeReleaseHistoryModal() {
   setTimeout(() => modal.classList.add('hidden'), 200);
 }
 
-// ── Edit History Modal ────────────────────────────────────────────────────────
-function openEditHistory(idx) {
-  const item = (window._previewFilteredItems || [])[idx];
-  if (!item) return;
-  const modal = document.getElementById('editHistoryModal');
-  const nameEl = document.getElementById('editHistoryItemName');
-  const tbody = document.getElementById('editHistoryTableBody');
-  if (!modal || !tbody) return;
-
-  if (nameEl) nameEl.textContent = item.name;
-
-  const edits = getEditHistory(item);
-  if (edits.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="2" class="py-8 text-center text-sm text-slate-500 italic">No edits have been recorded for this item.</td></tr>`;
-  } else {
-    tbody.innerHTML = edits.map((edit, i) => {
-      const changes = Array.isArray(edit.changes) ? edit.changes : [];
-      const changesHtml = changes.map(change => `
-        <div class="text-[11px] flex items-start gap-1.5 mt-1 first:mt-0">
-          <span class="font-semibold text-slate-600 shrink-0">${change.label || 'Field'}:</span>
-          <span class="text-rose-500 line-through">${change.from || '-'}</span>
-          <i class="fa-solid fa-arrow-right text-slate-300 text-[9px] mt-0.5 shrink-0"></i>
-          <span class="text-emerald-600">${change.to || '-'}</span>
-        </div>
-      `).join('');
-      return `
-        <tr class="${i % 2 === 0 ? 'bg-white' : 'bg-slate-50'} text-xs align-top">
-          <td class="py-2.5 px-4 text-slate-500 whitespace-nowrap">${formatDateTime(edit.changedAt)}</td>
-          <td class="py-2.5 px-4">${changesHtml || '<span class="text-slate-400 italic">No field changes recorded.</span>'}</td>
-        </tr>
-      `;
-    }).join('');
-  }
-
-  modal.classList.remove('hidden');
-  requestAnimationFrame(() => {
-    modal.classList.add('opacity-100');
-    const inner = modal.querySelector('div');
-    if (inner) inner.classList.remove('scale-95');
-  });
-}
-
-function closeEditHistoryModal() {
-  const modal = document.getElementById('editHistoryModal');
-  if (!modal) return;
-  modal.classList.remove('opacity-100');
-  const inner = modal.querySelector('div');
-  if (inner) inner.classList.add('scale-95');
-  setTimeout(() => modal.classList.add('hidden'), 200);
-}
-
 // ── Sub-Item Release History Modal ──────────────────────────────────────────
 function openSubReleaseHistoryPreview(itemIdx, subIdx) {
   const item = (window._previewFilteredItems || [])[itemIdx];
@@ -1881,14 +2342,14 @@ function initLiveUpdates() {
 
 // ── Initialization ───────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadReportSignatories();
   loadLogoImage('logo/dict-main-logo.png');
-  loadStoredExportLog();
-  renderExportLog();
   loadExportData(false);
   initLiveUpdates();
 
-  // Also re-render preview when the filter type changes
-  const filterTypeEl = document.getElementById('exportDateFilterType');
-  if (filterTypeEl) filterTypeEl.addEventListener('change', renderPreviewTable);
+  const contentScopeEl = document.getElementById('exportContentScope');
+  if (contentScopeEl) {
+    contentScopeEl.addEventListener('change', () => {
+      updateExportRangeBadge();
+    });
+  }
 });

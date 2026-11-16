@@ -15,24 +15,6 @@ const releaseSchema = new mongoose.Schema(
   { _id: false }
 );
 
-const editChangeSchema = new mongoose.Schema(
-  {
-    label: { type: String, required: true },
-    from: { type: String, default: '' },
-    to: { type: String, default: '' }
-  },
-  { _id: false }
-);
-
-const editHistorySchema = new mongoose.Schema(
-  {
-    changedAt: { type: Date, required: true },
-    reconstructedFromReleaseHistory: { type: Boolean, default: false },
-    changes: { type: [editChangeSchema], default: [] }
-  },
-  { _id: false }
-);
-
 const subItemSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
@@ -52,6 +34,7 @@ const subItemSchema = new mongoose.Schema(
 
 const inventoryItemSchema = new mongoose.Schema(
   {
+    id: { type: String, index: true },
     name: { type: String, required: true, trim: true, maxlength: 160 },
     serialNumber: { type: String, default: '', maxlength: 2000 },
     unitType: { type: String, default: 'pcs', trim: true, maxlength: 80 },
@@ -64,7 +47,6 @@ const inventoryItemSchema = new mongoose.Schema(
     releaseDate: { type: String, default: '' },
     remarks: { type: String, default: '', trim: true, maxlength: 180 },
     releaseHistory: { type: [releaseSchema], default: [] },
-    editHistory: { type: [editHistorySchema], default: [] },
     subItems: { type: [subItemSchema], default: [] }
   },
   { timestamps: true, versionKey: false }

@@ -1,9 +1,10 @@
 const express = require('express');
 const InventoryItem = require('../models/InventoryItem');
 const SalesSummary = require('../models/SalesSummary');
+const InventoryOrder = require('../../frontend/inventory-order');
 
 const router = express.Router();
-const itemFields = ['name', 'serialNumber', 'unitType', 'price', 'sortOrder', 'quantity', 'soldQuantity', 'description', 'inventoryRemarks', 'releaseDate', 'remarks', 'releaseHistory', 'editHistory', 'subItems'];
+const itemFields = ['id', 'name', 'serialNumber', 'unitType', 'price', 'sortOrder', 'quantity', 'soldQuantity', 'description', 'inventoryRemarks', 'releaseDate', 'remarks', 'releaseHistory', 'subItems'];
 const liveUpdateClients = new Set();
 
 function broadcastInventoryUpdate(sourceId) {
@@ -97,7 +98,7 @@ function calculateSalesRevenue(records) {
 
 router.get('/items', async (_req, res, next) => {
   try {
-    const items = await InventoryItem.find().sort({ sortOrder: 1, createdAt: 1 }).lean();
+    const items = await InventoryItem.find().sort({ createdAt: 1, sortOrder: 1, _id: 1 }).lean();
     res.json({
       items,
       totalSalesRevenue: calculateSalesRevenue(items)
@@ -105,13 +106,6 @@ router.get('/items', async (_req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
-
-router.get('/config/signatories', (_req, res) => {
-  res.json({
-    preparedBy: process.env.REPORT_PREPARED_BY || 'Ma. Ann C. Pascua',
-    approvedBy: process.env.REPORT_APPROVED_BY || 'Jesus S. Agliam Jr.'
-  });
 });
 
 // Keeps every open inventory page in sync without polling or a manual refresh.
@@ -136,22 +130,7 @@ router.get('/events', (req, res) => {
 });
 
 function dedupeIncomingItems(rawItems) {
-  if (!Array.isArray(rawItems)) return [];
-  const seen = new Set();
-  const clean = [];
-  for (const item of rawItems) {
-    if (!item) continue;
-    const nameKey = String(item.name || '').trim().toLowerCase();
-    const createdKey = item.createdAt ? new Date(item.createdAt).toISOString() : '';
-    const compositeKey = nameKey + '|' + createdKey;
-
-    if (compositeKey && createdKey) {
-      if (seen.has(compositeKey)) continue;
-      seen.add(compositeKey);
-    }
-    clean.push(item);
-  }
-  return clean;
+  return InventoryOrder.uniqueItems(rawItems);
 }
 
 let inventoryWriteQueue = Promise.resolve();
@@ -165,20 +144,43 @@ router.put('/inventory', async (req, res, next) => {
         return res.status(400).json({ message: 'An items array is required.' });
       }
 
-      const deduplicated = dedupeIncomingItems(req.body.items);
-      const records = deduplicated.map((item, index) => ({
-        ...pickItemFields(item),
-        sortOrder: index,
-        createdAt: item.createdAt ? new Date(item.createdAt) : new Date(),
-        updatedAt: new Date()
-      }));
+      const existingItems = await InventoryItem.find().lean();
+      const existingById = new Map();
+      existingItems.forEach(item => {
+        existingById.set(String(item._id), item);
+        if (item.id) existingById.set(item.id, item);
+      });
+      const now = new Date();
+      const documents = dedupeIncomingItems(req.body.items).map(item => {
+        const existing = existingById.get(String(item.id || '')) || existingById.get(String(item._id || ''));
+        return new InventoryItem({
+          ...pickItemFields(item),
+          ...(existing ? { _id: existing._id } : {}),
+          id: existing?.id || item.id || (existing ? String(existing._id) : undefined),
+          createdAt: existing?.createdAt || (item.createdAt != null ? item.createdAt : now),
+          updatedAt: now
+        });
+      });
+      // Reject an invalid snapshot before writing or removing any stored data.
+      await Promise.all(documents.map(document => document.validate()));
+      const records = documents.map(document => document.toObject()).sort(InventoryOrder.compareOldest);
+      records.forEach((record, index) => { record.sortOrder = index; });
       // Calculate from the persisted release histories instead of trusting a
       // browser counter. This stays correct after an item is deleted.
       const totalSalesRevenue = calculateSalesRevenue(records);
 
-      await InventoryItem.deleteMany({});
       if (records.length) {
-        await InventoryItem.insertMany(records);
+        // Keep database IDs stable. Only remove omitted records after every
+        // replacement succeeds, so validation/write errors cannot erase stock.
+        await InventoryItem.bulkWrite(records.map(record => ({
+          replaceOne: {
+            filter: { _id: record._id },
+            replacement: record,
+            upsert: true,
+            timestamps: false
+          }
+        })), { ordered: true });
+        await InventoryItem.deleteMany({ _id: { $nin: records.map(record => record._id) } });
         await SalesSummary.findOneAndUpdate(
           { key: 'inventory' },
           { totalSalesRevenue },
@@ -186,6 +188,7 @@ router.put('/inventory', async (req, res, next) => {
         );
       } else {
         // A cleared web inventory should leave no placeholder record in Atlas.
+        await InventoryItem.deleteMany({});
         await SalesSummary.deleteMany({});
       }
 
@@ -199,16 +202,17 @@ router.put('/inventory', async (req, res, next) => {
 });
 
 router.delete('/items', async (req, res, next) => {
-  try {
-    await Promise.all([
-      InventoryItem.deleteMany({}),
-      SalesSummary.deleteMany({})
-    ]);
-    broadcastInventoryUpdate(req.body?.clientId);
-    res.status(204).end();
-  } catch (error) {
-    next(error);
-  }
+  inventoryWriteQueue = inventoryWriteQueue.catch(() => {}).then(async () => {
+    try {
+      await InventoryItem.deleteMany({});
+      await SalesSummary.deleteMany({});
+      broadcastInventoryUpdate(req.body?.clientId);
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+  return inventoryWriteQueue;
 });
 
 module.exports = router;

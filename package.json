@@ -5,6 +5,7 @@
   "description": "DICT NBP inventory management web application",
   "main": "backend/server.js",
   "scripts": {
+    "test": "node --test",
     "dev": "nodemon backend/server.js",
     "start": "node backend/server.js"
   },

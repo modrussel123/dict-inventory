@@ -38,6 +38,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
   <!-- xlsx-js-style for color-formatted Excel export -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+  <script src="inventory-order.js"></script>
 
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -377,21 +378,6 @@
       }
     }
 
-    #inventoryTable tbody tr[draggable="true"] {
-      cursor: grab;
-    }
-
-    #inventoryTable tbody tr.inventory-row-dragging {
-      opacity: 0.45;
-      cursor: grabbing;
-    }
-
-    #inventoryTable tbody tr.inventory-row-drop-target {
-      outline: 2px solid #0284c7;
-      outline-offset: -2px;
-      background: #f0f9ff;
-    }
-
     @media (max-width: 640px) {
       #inventoryTable {
         min-width: 0 !important;
@@ -624,9 +610,8 @@
           <!-- Sort Select -->
           <select id="sortSelect" onchange="renderItems()"
             class="text-xs px-3 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-500 bg-white">
-            <option value="manual" selected>Sort: Custom Order</option>
+            <option value="oldest" selected>Sort: Oldest First</option>
             <option value="newest">Sort: Newest</option>
-            <option value="oldest">Sort: Oldest</option>
             <option value="name">Sort: Name (A-Z)</option>
             <option value="price-high">Sort: Total (High to Low)</option>
             <option value="price-low">Sort: Total (Low to High)</option>
@@ -666,10 +651,6 @@
 
               <!-- Danger Zone -->
               <div class="border-t border-slate-100 pt-1.5 space-y-1">
-                <button type="button" onclick="confirmClearAllEditHistory(); closeSettingsMenu();"
-                  class="w-full bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs font-medium py-1.5 px-2.5 rounded-lg transition flex items-center gap-2 cursor-pointer">
-                  <i class="fa-solid fa-clock-rotate-left text-xs"></i><span>Clear All Edit History</span>
-                </button>
                 <button type="button" onclick="confirmClearAll(); closeSettingsMenu();"
                   class="w-full bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-medium py-1.5 px-2.5 rounded-lg transition flex items-center gap-2 cursor-pointer">
                   <i class="fa-solid fa-trash text-xs"></i><span>Clear All Item Records</span>
@@ -852,9 +833,7 @@
             <thead>
               <tr
                 class="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
-                <th class="py-2.5 px-3 w-10 text-center" title="Drag rows to reorder when using Custom Order sort"># <i
-                    class="fa-solid fa-bars text-[10px] text-slate-400"></i>
-                </th>
+                <th class="py-2.5 px-3 w-10 text-center">#</th>
                 <th class="py-2.5 px-3 min-w-[260px] text-left">Item & Description</th>
                 <th class="py-2.5 px-2 min-w-[120px] text-center">Serial Number</th>
                 <th class="py-2.5 px-2 min-w-[80px] text-center">Unit Type</th>
@@ -912,25 +891,6 @@
         </div>
       </div>
 
-      <!-- Printable Signatories Footer -->
-      <div class="print-only mt-8 pt-6 border-t border-slate-200">
-        <div class="flex justify-between items-start text-xs max-w-4xl mx-auto px-4">
-          <div class="space-y-6">
-            <div>
-              <p class="font-bold text-slate-700">Prepared By:</p>
-              <p class="font-bold text-slate-900 text-sm mt-1 print-prepared-by"></p>
-            </div>
-            <div>
-              <p class="font-bold text-slate-700">Approved By:</p>
-              <p class="font-bold text-slate-900 text-sm mt-1 print-approved-by"></p>
-            </div>
-          </div>
-          <div>
-            <p class="font-bold text-slate-700">Received By:</p>
-            <div class="mt-8 border-b border-slate-300 w-56"></div>
-          </div>
-        </div>
-      </div>
     </section>
 
   </main>
@@ -1088,39 +1048,6 @@
       </div>
       <p id="releaseHistoryEmpty" class="hidden py-8 text-center text-sm text-slate-500">No releases have been
         recorded for this item.</p>
-    </div>
-  </div>
-
-  <!-- Edit History Modal -->
-  <div id="editHistoryModal"
-    class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center hidden opacity-0 transition-opacity duration-200">
-    <div
-      class="bg-white rounded-xl shadow-xl border border-slate-200 max-w-2xl w-full max-h-[90vh] p-4 sm:p-6 mx-4 flex flex-col overflow-hidden transform scale-95 transition-transform duration-200">
-      <div class="flex justify-between items-center mb-4 border-b pb-3 flex-shrink-0">
-        <div>
-          <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <i class="fa-solid fa-pen-to-square text-brand-500"></i> Edit History
-          </h3>
-          <p id="editHistoryItemName" class="text-xs text-slate-500 mt-1">-</p>
-        </div>
-        <button type="button" onclick="closeEditHistoryModal()"
-          class="text-slate-400 hover:text-slate-600 text-lg cursor-pointer" aria-label="Close edit history">
-          <i class="fa-solid fa-xmark"></i>
-        </button>
-      </div>
-      <div class="overflow-auto overscroll-contain min-h-0">
-        <table class="w-full min-w-[540px] text-left border-collapse">
-          <thead
-            class="bg-slate-50 border-y border-slate-200 text-xs font-bold text-slate-600 uppercase tracking-wider sticky top-0">
-            <tr>
-              <th class="py-3 px-4">Edited Date & Time</th>
-              <th class="py-3 px-4">Changes</th>
-              <th class="py-3 px-4 text-center w-16">Action</th>
-            </tr>
-          </thead>
-          <tbody id="editHistoryTableBody" class="divide-y divide-slate-100 text-sm"></tbody>
-        </table>
-      </div>
     </div>
   </div>
 
@@ -1311,25 +1238,9 @@
           stickyBar.style.top = (header.getBoundingClientRect().bottom / zoom) + 'px';
         }
 
-        // Translate the thead row down so it stays visible just below the stickyBar
+        // The shared table control keeps its scrollbar and headings together.
         function syncThead() {
-          const theadRow = document.querySelector('#inventoryTable thead tr');
-          const table = document.getElementById('inventoryTable');
-          if (!theadRow || !table) return;
-
-          const zoom = getZoom();
-          // When stickyBar is stuck its bottom is the exact target position for thead
-          const threshold = stickyBar.getBoundingClientRect().bottom / zoom;
-          const tableTop = table.getBoundingClientRect().top / zoom;
-
-          if (tableTop < threshold) {
-            const rawShift = threshold - tableTop;
-            const maxShift = table.getBoundingClientRect().height / zoom
-              - theadRow.getBoundingClientRect().height / zoom;
-            theadRow.style.transform = 'translateY(' + Math.min(rawShift, maxShift) + 'px)';
-          } else {
-            theadRow.style.transform = '';
-          }
+          window.InventoryTableScroll?.update();
         }
 
         function updateAll() {
@@ -1385,19 +1296,25 @@
     function normaliseDatabaseItem(item, fallbackSortOrder = 0) {
       const itemId = item.id || item._id || `item-${fallbackSortOrder}`;
       return {
-        ...item,
+        _id: item._id,
+        name: item.name,
+        serialNumber: item.serialNumber,
+        unitType: item.unitType || item.category || 'pcs',
+        price: item.price,
+        quantity: item.quantity,
+        soldQuantity: item.soldQuantity,
+        description: item.description,
+        releaseDate: item.releaseDate,
+        remarks: item.remarks,
+        updatedAt: item.updatedAt,
         id: itemId,
         sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : fallbackSortOrder,
-        createdAt: item.createdAt ? new Date(item.createdAt).getTime() : Date.now(),
+        createdAt: item.createdAt != null ? new Date(item.createdAt).getTime() : null,
         inventoryRemarks: item.inventoryRemarks || '',
         releaseHistory: (item.releaseHistory || []).map((release, releaseIndex) => ({
           ...release,
           id: release.id || `legacy-release-${itemId}-${releaseIndex}`,
           releasedAt: release.releasedAt ? new Date(release.releasedAt).getTime() : release.releasedAt
-        })),
-        editHistory: (item.editHistory || []).map(edit => ({
-          ...edit,
-          changedAt: edit.changedAt ? new Date(edit.changedAt).getTime() : edit.changedAt
         })),
         subItems: Array.isArray(item.subItems) ? item.subItems.map((sub, sIdx) => {
           const subId = sub.id || `sub-${itemId}-${sIdx}`;
@@ -1423,22 +1340,7 @@
     }
 
     function dedupeItemsList(list) {
-      if (!Array.isArray(list)) return [];
-      const seen = new Set();
-      const clean = [];
-      for (const item of list) {
-        if (!item) continue;
-        const nameKey = String(item.name || '').trim().toLowerCase();
-        const createdKey = item.createdAt ? new Date(item.createdAt).getTime() : '';
-        const compositeKey = nameKey + '|' + createdKey;
-
-        if (compositeKey && createdKey) {
-          if (seen.has(compositeKey)) continue;
-          seen.add(compositeKey);
-        }
-        clean.push(item);
-      }
-      return clean;
+      return InventoryOrder.oldestFirst(list);
     }
 
     async function loadFromDatabase() {
@@ -1856,13 +1758,6 @@
       return `${formatDate(release.date)}, ${time}`;
     }
 
-    function formatDateTime(value) {
-      if (!value || Number.isNaN(new Date(value).getTime())) return '-';
-      return new Date(value).toLocaleString('en-PH', {
-        year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
-      });
-    }
-
     // Keep PDF dates deliberately on two lines. This prevents AutoTable from
     // splitting a date at an arbitrary point when a column is narrow.
     function formatPdfDateTime(value) {
@@ -1889,10 +1784,6 @@
         .replace(/[\u2192\u2794\u279C]/g, 'to')
         .replace(/[\u2014\u2013]/g, '-')
         .replace(/[^\x20-\x7E\n]/g, '?');
-    }
-
-    function getEditHistory(item) {
-      return Array.isArray(item.editHistory) ? item.editHistory : [];
     }
 
     function updateCategoryFilterOptions() {
@@ -2233,13 +2124,6 @@
       migrateExistingBundles();
       startLiveUpdates();
 
-      // One-time migration: reverse the custom order so #1 <-> #21, #2 <-> #20, etc.
-      if (!safeGetStorage('quantifyit_order_v4')) {
-        items.reverse();
-        safeSetStorage('quantifyit_order_v4', '1');
-        saveToLocalStorage();
-      }
-
       document.addEventListener('click', (event) => {
         const menu = document.getElementById('settingsMenu');
         const button = document.getElementById('settingsButton');
@@ -2339,7 +2223,7 @@
       const searchTerm = searchInput ? searchInput.value.toLowerCase().trim() : '';
       const categoryFilter = categorySelect ? categorySelect.value : 'ALL';
       const stockFilter = stockSelect ? stockSelect.value : 'ALL';
-      const sortOption = sortSelect ? sortSelect.value : 'manual';
+      const sortOption = sortSelect ? sortSelect.value : 'oldest';
 
       // Filter items
       let result = items.filter(item => {
@@ -2368,9 +2252,8 @@
 
       // Sort items
       result.sort((a, b) => {
-        if (sortOption === 'manual') return 0; // preserve custom items array order
-        if (sortOption === 'newest') return (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0);
-        if (sortOption === 'oldest') return (new Date(a.createdAt).getTime() || 0) - (new Date(b.createdAt).getTime() || 0);
+        if (sortOption === 'newest') return InventoryOrder.compareOldest(b, a);
+        if (sortOption === 'oldest') return InventoryOrder.compareOldest(a, b);
         if (sortOption === 'name') return (a.name || '').localeCompare(b.name || '');
         if (sortOption === 'price-high') return getItemEffectiveValue(b) - getItemEffectiveValue(a);
         if (sortOption === 'price-low') return getItemEffectiveValue(a) - getItemEffectiveValue(b);
@@ -2387,10 +2270,7 @@
       const emptyState = document.getElementById('emptyState');
       if (!tbody || !emptyState) return;
 
-      const sortSelect = document.getElementById('sortSelect');
-      const sortOption = sortSelect ? sortSelect.value : 'manual';
       const filtered = getProcessedItems();
-      const isDraggable = sortOption === 'manual';
 
       tbody.innerHTML = '';
 
@@ -2407,15 +2287,9 @@
 
           const latestRelease = getLatestRelease(item);
           const releaseHistory = getReleaseHistory(item);
-          const editHistory = getEditHistory(item);
           const itemReleasedQty = getItemReleasedQuantity(item);
           const tr = document.createElement('tr');
-          tr.className = "hover:bg-slate-50/80 transition group border-b border-slate-100" + (isDraggable ? ' cursor-grab' : '');
-          if (isDraggable) {
-            tr.setAttribute('draggable', 'true');
-            tr.dataset.id = item.id;
-            attachDragListeners(tr);
-          }
+          tr.className = "hover:bg-slate-50/80 transition group border-b border-slate-100";
 
           const displayInStockQty = hasSubItems
             ? item.subItems.reduce((sum, sub) => sum + (Number(sub.quantity) || 0), 0)
@@ -2439,8 +2313,8 @@
 
           tr.innerHTML = `
                         <!-- # Row Number -->
-                        <td class="py-2 px-3 text-center text-xs font-semibold whitespace-nowrap select-none ${isDraggable ? 'text-slate-400 cursor-grab' : 'text-slate-400'}">
-                            ${isDraggable ? `<span class="inline-flex items-center gap-1"><i class="fa-solid fa-grip-vertical text-slate-300"></i>${index + 1}</span>` : index + 1}
+                        <td class="py-2 px-3 text-center text-xs font-semibold whitespace-nowrap select-none text-slate-400">
+                            ${index + 1}
                         </td>
 
                         <!-- Item & Description -->
@@ -2523,8 +2397,7 @@
                         <!-- History -->
                         <td class="py-2 px-2 text-center text-[10px] whitespace-nowrap">
                             ${releaseHistory.length ? `<button type="button" onclick="openReleaseHistory('${item.id}')" class="block mx-auto text-[10px] font-semibold text-brand-600 hover:text-brand-700 hover:underline cursor-pointer">View release history</button>` : ''}
-                            ${editHistory.length ? `<button type="button" onclick="openEditHistory('${item.id}')" class="${releaseHistory.length ? 'mt-1 ' : ''}block mx-auto text-[10px] font-semibold text-indigo-600 hover:text-indigo-700 hover:underline cursor-pointer">View edit history</button>` : ''}
-                            ${!releaseHistory.length && !editHistory.length ? '<span class="text-slate-400">-</span>' : ''}
+                            ${!releaseHistory.length ? '<span class="text-slate-400">-</span>' : ''}
                         </td>
 
                         <!-- Remarks -->
@@ -2541,9 +2414,6 @@
                                 </button>
                                 <button type="button" onclick="openEditModal('${item.id}')" title="Edit" class="p-1 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded transition cursor-pointer">
                                     <i class="fa-solid fa-pen text-xs"></i>
-                                </button>
-                                <button type="button" onclick="duplicateItem('${item.id}')" title="Duplicate" class="p-1 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded transition cursor-pointer">
-                                    <i class="fa-solid fa-copy text-xs"></i>
                                 </button>
                                 <button type="button" onclick="confirmDeleteItem('${item.id}')" title="Delete" class="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer">
                                     <i class="fa-solid fa-trash-can text-xs"></i>
@@ -2686,57 +2556,6 @@
       calculateTotals();
     }
 
-    // -- Drag-and-drop reorder --
-    let dragSrcId = null;
-
-    function attachDragListeners(tr) {
-      tr.addEventListener('dragstart', (e) => {
-        dragSrcId = tr.dataset.id;
-        tr.classList.add('inventory-row-dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', dragSrcId);
-      });
-
-      tr.addEventListener('dragend', () => {
-        tr.classList.remove('inventory-row-dragging');
-        document.querySelectorAll('#itemsTableBody tr').forEach(r =>
-          r.classList.remove('inventory-row-drop-target')
-        );
-        dragSrcId = null;
-      });
-
-      tr.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        document.querySelectorAll('#itemsTableBody tr').forEach(r =>
-          r.classList.remove('inventory-row-drop-target')
-        );
-        tr.classList.add('inventory-row-drop-target');
-      });
-
-      tr.addEventListener('dragleave', () => {
-        tr.classList.remove('inventory-row-drop-target');
-      });
-
-      tr.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const targetId = tr.dataset.id;
-        if (!dragSrcId || dragSrcId === targetId) return;
-
-        // Reorder the master items array
-        const srcIdx = items.findIndex(i => i.id === dragSrcId);
-        const tgtIdx = items.findIndex(i => i.id === targetId);
-        if (srcIdx === -1 || tgtIdx === -1) return;
-
-        const [moved] = items.splice(srcIdx, 1);
-        items.splice(tgtIdx, 0, moved);
-
-        saveToLocalStorage();
-        renderItems();
-      });
-    }
-    // -------------------------------------------------------------
-
     function handleAddItem(e) {
       if (e) e.preventDefault();
 
@@ -2784,7 +2603,6 @@
         releaseDate: '',
         remarks: '',
         releaseHistory: [],
-        editHistory: [],
         subItems: subItems,
         createdAt: Date.now()
       };
@@ -2982,141 +2800,6 @@
       modal.classList.add('opacity-0');
       modal.querySelector('div')?.classList.add('scale-95');
       setTimeout(() => modal.classList.add('hidden'), 200);
-    }
-
-    function recoverMissingSubItemEditHistory(item) {
-      const subItems = Array.isArray(item.subItems) ? item.subItems : [];
-      const parentHistory = getReleaseHistory(item);
-      const existingRecoveryLabels = new Set(
-        getEditHistory(item)
-          .filter(edit => edit.reconstructedFromReleaseHistory)
-          .flatMap(edit => (edit.changes || []).map(change => change.label))
-      );
-      const changes = [];
-
-      subItems.forEach(sub => {
-        if ((Number(sub.soldQuantity) || 0) > 0) return;
-
-        const subHistory = Array.isArray(sub.releaseHistory) ? sub.releaseHistory : [];
-        const subLabel = `Sub-item "${sub.name}"`;
-        const quantityLabel = `Recovered from release history: ${subLabel} latest release quantity`;
-        if (existingRecoveryLabels.has(quantityLabel)) return;
-        const subNamePrefix = `[Sub-item: ${sub.name}]`;
-        const candidates = parentHistory.filter(release =>
-          release.subItemId === sub.id ||
-          release.subItemName === sub.name ||
-          (typeof release.remarks === 'string' && release.remarks.startsWith(subNamePrefix))
-        );
-        const removedLatestRelease = candidates.find(parentRelease => {
-          const parentRemarks = typeof parentRelease.remarks === 'string' &&
-            parentRelease.remarks.startsWith(subNamePrefix)
-            ? parentRelease.remarks.slice(subNamePrefix.length).trim()
-            : parentRelease.remarks;
-          return !subHistory.some(subRelease =>
-            Number(subRelease.quantity) === Number(parentRelease.quantity) &&
-            (subRelease.date || '') === (parentRelease.date || '') &&
-            (subRelease.remarks || '') === (parentRemarks || '')
-          );
-        });
-        if (!removedLatestRelease || !(Number(removedLatestRelease.quantity) > 0)) return;
-
-        const removedRemarks = typeof removedLatestRelease.remarks === 'string' &&
-          removedLatestRelease.remarks.startsWith(subNamePrefix)
-          ? removedLatestRelease.remarks.slice(subNamePrefix.length).trim()
-          : (removedLatestRelease.remarks || '');
-        changes.push({
-          label: quantityLabel,
-          from: String(removedLatestRelease.quantity),
-          to: '0'
-        });
-        if (removedRemarks) {
-          changes.push({
-            label: `Recovered from release history: ${subLabel} latest release remarks`,
-            from: removedRemarks,
-            to: '\u2014'
-          });
-        }
-      });
-
-      if (!changes.length) return false;
-
-      const editHistory = getEditHistory(item).map(edit => ({ ...edit }));
-      editHistory.unshift({
-        changedAt: Date.now(),
-        reconstructedFromReleaseHistory: true,
-        changes
-      });
-      item.editHistory = editHistory;
-      saveToLocalStorage();
-      return true;
-    }
-
-    function openEditHistory(id) {
-      const item = items.find(i => i.id === id);
-      if (item) recoverMissingSubItemEditHistory(item);
-      const history = item ? getEditHistory(item) : [];
-      if (!item || !history.length) return;
-
-      document.getElementById('editHistoryItemName').innerText = item.name;
-      document.getElementById('editHistoryTableBody').innerHTML = history.map((edit, editIndex) => `
-        <tr>
-          <td class="py-3 px-4 text-slate-700 whitespace-nowrap align-top">${edit.reconstructedFromReleaseHistory ? 'Recovered from release history' : formatDateTime(edit.changedAt)}</td>
-          <td class="py-3 px-4 align-top">
-            <div class="space-y-2">
-              ${(edit.changes || []).map(change => `
-                <div class="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-                  <p class="text-xs font-semibold text-slate-700">${escapeHtml(change.label)}</p>
-                  <div class="mt-1.5 grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
-                    <p class="text-slate-500"><span class="font-semibold">Before:</span> ${escapeHtml(change.from || '\u2014')}</p>
-                    <p class="text-brand-700"><span class="font-semibold">After:</span> ${escapeHtml(change.to || '\u2014')}</p>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          </td>
-          <td class="py-3 px-4 text-center align-top whitespace-nowrap">
-            <button type="button" onclick="confirmDeleteEditHistoryEntry('${item.id}', ${editIndex})" title="Delete this edit log"
-              class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer">
-              <i class="fa-solid fa-trash-can text-sm"></i>
-            </button>
-          </td>
-        </tr>
-      `).join('');
-
-      const modal = document.getElementById('editHistoryModal');
-      modal.classList.remove('hidden');
-      setTimeout(() => {
-        modal.classList.remove('opacity-0');
-        modal.querySelector('div')?.classList.remove('scale-95');
-      }, 10);
-    }
-
-    function closeEditHistoryModal() {
-      const modal = document.getElementById('editHistoryModal');
-      modal.classList.add('opacity-0');
-      modal.querySelector('div')?.classList.add('scale-95');
-      setTimeout(() => modal.classList.add('hidden'), 200);
-    }
-
-    function confirmDeleteEditHistoryEntry(itemId, editIndex) {
-      const item = items.find(i => i.id === itemId);
-      if (!item || !Array.isArray(item.editHistory) || !item.editHistory[editIndex]) return;
-
-      showConfirmModal(
-        'Delete Edit History Entry',
-        'Are you sure you want to delete this edit history entry? This will permanently remove this log from the database.',
-        () => {
-          item.editHistory.splice(editIndex, 1);
-          saveToLocalStorage();
-          renderItems();
-          showToast('Edit history entry deleted.');
-          if (item.editHistory.length > 0) {
-            openEditHistory(itemId);
-          } else {
-            closeEditHistoryModal();
-          }
-        }
-      );
     }
 
     function adjustSellQty(delta) {
@@ -3381,24 +3064,6 @@
       }
 
       const updatedLatestRelease = mainReleaseHistory[0] || null;
-      const editChanges = [];
-      const recordEditChange = (label, from, to) => {
-        if (String(from ?? '') !== String(to ?? '')) {
-          editChanges.push({ label, from: String(from ?? '\u2014'), to: String(to ?? '\u2014') });
-        }
-      };
-
-      recordEditChange('Item name', item.name, name);
-      recordEditChange('Serial Number', item.serialNumber || '\u2014', serialNumber || '\u2014');
-      recordEditChange('Unit Type', item.unitType || item.category || 'pcs', unitType);
-      recordEditChange('Unit price', `PHP ${originalPrice.toFixed(2)}`, `PHP ${price.toFixed(2)}`);
-      recordEditChange('Stock quantity', item.quantity, adjustedStockQuantity);
-      recordEditChange('Description', item.description || '\u2014', description || '\u2014');
-      recordEditChange('Item remarks', item.inventoryRemarks || '\u2014', inventoryRemarks || '\u2014');
-      recordEditChange('Latest release quantity', previousLatestQuantity, latestReleaseQuantity);
-      recordEditChange('Latest release date', latestRelease?.date || '\u2014', latestReleaseQuantity > 0 ? (releaseDate || '\u2014') : '\u2014');
-      const editHistory = getEditHistory(item).map(edit => ({ ...edit }));
-
       const subItemRows = document.querySelectorAll('#editSubItemsList .edit-subitem-row');
       const updatedSubItems = Array.from(subItemRows).map(row => {
         let subReleaseHistory = [];
@@ -3431,30 +3096,6 @@
           : Math.max(0, prevSubSoldQty + subReleaseDelta);     // normal delta adjust
         let editedSubReleaseId = previousSubRelease?.id || null;
         const oldSubName = previousSubItem?.name || subName;
-        const subLabel = `Sub-item "${oldSubName}"`;
-
-        if (!previousSubItem) {
-          recordEditChange('Sub-item added', '\u2014', subName);
-        } else {
-          recordEditChange(`${subLabel} name`, oldSubName, subName);
-          recordEditChange(`${subLabel} serial number`, previousSubItem.serialNumber || '\u2014', subSerial || '\u2014');
-          recordEditChange(`${subLabel} unit type`, previousSubItem.unitType || 'pcs', row.querySelector('.sub-unit').value.trim() || 'pcs');
-          recordEditChange(`${subLabel} stock quantity`, previousSubItem.quantity, newSubStockQty);
-          recordEditChange(`${subLabel} unit price`, `PHP ${(Number(previousSubItem.price) || 0).toFixed(2)}`, `PHP ${subPrice.toFixed(2)}`);
-          recordEditChange(`${subLabel} latest release quantity`, prevSubReleaseQty, newSubReleaseQty);
-          recordEditChange(`${subLabel} remarks`, previousSubItem.inventoryRemarks || '\u2014', (row.querySelector('.sub-inventory-remarks')?.value || '').trim() || '\u2014');
-          recordEditChange(
-            `${subLabel} latest release date`,
-            previousSubRelease?.date || '\u2014',
-            newSubReleaseQty > 0 ? (newSubReleaseDate || previousSubRelease?.date || '\u2014') : '\u2014'
-          );
-          recordEditChange(
-            `${subLabel} latest release remarks`,
-            previousSubRelease?.remarks || '\u2014',
-            newSubReleaseQty > 0 ? (subRemarks || '\u2014') : '\u2014'
-          );
-        }
-
         if (newSubReleaseQty > 0) {
           if (previousSubRelease) {
             subReleaseHistory[0] = {
@@ -3514,13 +3155,6 @@
         const rightTime = Number(right.releasedAt || right.createdAt) || 0;
         return rightTime - leftTime;
       });
-      const updatedSubItemIds = new Set(updatedSubItems.map(sub => sub.id));
-      (item.subItems || []).forEach(sub => {
-        if (!updatedSubItemIds.has(sub.id)) {
-          recordEditChange('Sub-item removed', sub.name, '\u2014');
-        }
-      });
-      if (editChanges.length) editHistory.unshift({ changedAt: Date.now(), changes: editChanges });
       item.subItems = updatedSubItems;
 
       item.name = name;
@@ -3529,7 +3163,6 @@
       item.price = price;
       item.quantity = adjustedStockQuantity;
       item.releaseHistory = dedupeReleaseHistory(updatedReleaseHistory);
-      item.editHistory = editHistory;
       item.description = description;
       item.inventoryRemarks = inventoryRemarks;
       item.releaseDate = updatedLatestRelease?.date || '';
@@ -3541,55 +3174,6 @@
       renderItems();
       closeEditModal();
       showToast(`Updated "${name}"`);
-    }
-
-    function duplicateItem(id) {
-      const item = items.find(i => i.id === id);
-      if (!item) return;
-
-      const copySuffix = /\s*\(Copy(?:\s+\d+)?\)\s*$/i;
-      const baseName = (() => {
-        let value = String(item.name || '').trim();
-        // Also clean names made by the old duplicate behaviour, such as
-        // "Item (Copy) (Copy)", before adding the next numbered copy.
-        while (copySuffix.test(value)) value = value.replace(copySuffix, '').trim();
-        return value || 'Untitled item';
-      })();
-      const baseKey = baseName.toLocaleLowerCase();
-      const highestCopyNumber = items.reduce((highest, candidate) => {
-        let candidateName = String(candidate.name || '').trim();
-        const match = candidateName.match(copySuffix);
-        if (!match) return highest;
-
-        while (copySuffix.test(candidateName)) candidateName = candidateName.replace(copySuffix, '').trim();
-        if (candidateName.toLocaleLowerCase() !== baseKey) return highest;
-
-        return Math.max(highest, Number(match[1] || 1));
-      }, 0);
-      const copyNumber = highestCopyNumber + 1;
-
-      const cloned = {
-        ...item,
-        id: 'item-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-        name: `${baseName} (Copy ${copyNumber})`,
-        soldQuantity: 0,
-        releaseDate: '',
-        remarks: '',
-        inventoryRemarks: '',
-        releaseHistory: [],
-        editHistory: [],
-        subItems: (item.subItems || []).map((s, idx) => ({
-          ...s,
-          id: 'sub-' + Date.now() + '-' + idx + '-' + Math.random().toString(36).substring(2, 6),
-          soldQuantity: 0
-        })),
-        createdAt: Date.now()
-      };
-
-      items.unshift(cloned);
-      saveToLocalStorage();
-      renderItems();
-      showToast(`Duplicated "${item.name}"`);
     }
 
     function confirmDeleteItem(id) {
@@ -3609,26 +3193,6 @@
       );
     }
 
-    function confirmClearAllEditHistory() {
-      const hasAnyEditHistory = items.some(item => Array.isArray(item.editHistory) && item.editHistory.length > 0);
-      if (!hasAnyEditHistory) {
-        showToast('No edit history records found.', true);
-        return;
-      }
-
-      showConfirmModal(
-        'Clear All Edit History',
-        'This will permanently delete all edit history logs across all items and update the database. Inventory item quantities, prices, descriptions, and release history will NOT be affected. Are you sure?',
-        () => {
-          items.forEach(item => {
-            item.editHistory = [];
-          });
-          saveToLocalStorage();
-          renderItems();
-          showToast('All edit history records have been cleared from database.');
-        }
-      );
-    }
 
     function confirmClearAll() {
       if (items.length === 0 && totalSalesRevenue === 0) return;
@@ -3718,30 +3282,6 @@
         document.getElementById('finalReleasedValueDisplay').innerText = formatMoney(releasedValue);
       }
     }
-
-    // Signatories are fetched dynamically from the secure backend config API (/api/config/signatories)
-    // which reads from the protected backend .env file (excluded from git repository).
-    // An obscured fallback is maintained in case the API is unreachable.
-    let reportSignatories = {
-      preparedBy: atob('TWEuIEFubiBDLiBQYXNjdWE='),
-      approvedBy: atob('SmVzdXMgUy4gQWdsaWFtIEpyLg==')
-    };
-
-    async function loadReportSignatories() {
-      try {
-        const res = await fetch('/api/config/signatories');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.preparedBy) reportSignatories.preparedBy = data.preparedBy;
-          if (data.approvedBy) reportSignatories.approvedBy = data.approvedBy;
-        }
-      } catch (err) {
-        console.warn('Could not fetch signatories from API, using secure default configuration.');
-      }
-      document.querySelectorAll('.print-prepared-by').forEach(el => el.textContent = reportSignatories.preparedBy);
-      document.querySelectorAll('.print-approved-by').forEach(el => el.textContent = reportSignatories.approvedBy);
-    }
-    loadReportSignatories();
 
     let cachedLogoImg = null;
     function loadLogoImage(src) {
@@ -3910,7 +3450,7 @@
       const wsData = [];
       const rowMeta = [];
 
-      const S_INV = 'inv', S_REL = 'rel', S_EDIT = 'edit', S_TOT = 'tot';
+      const S_INV = 'inv', S_REL = 'rel', S_TOT = 'tot';
 
       function addRow(values, type, section, opts = {}) {
         wsData.push(values);
@@ -4052,51 +3592,7 @@
       if (relIdx === 0) addRow(['No release transactions match this date range.'], 'message', S_REL, { cols: 9 });
       addRow([], 'empty', null);
 
-      // -- COMPLETE EDIT HISTORY --
-      addRow([`COMPLETE EDIT HISTORY${dateRangeLabel}`], 'title', S_EDIT, { rgb: '0369A1', cols: 11 });
-      addRow(['#', 'Edited Date & Time', 'Item Name', 'Field Changed', 'Before', 'After', 'Unit Type'],
-        'header', S_EDIT, { rgb: '0C5E9E', cols: 7 });
 
-      let editIdx = 0;
-      sortedItems.forEach(item => {
-        getEditHistory(item).forEach(edit => {
-          if (hasDateFilter && !isDateWithinRange(edit.changedAt, dateFromVal, dateToVal)) {
-            return;
-          }
-          (edit.changes || []).forEach(change => {
-            editIdx++;
-            addRow([editIdx, formatDateTime(edit.changedAt), item.name, change.label || 'Change',
-              change.from || '-', change.to || '-', item.unitType || item.category || 'pcs'],
-              editIdx % 2 === 1 ? 'data-odd' : 'data-even', S_EDIT, { cols: 7 });
-          });
-        });
-      });
-      if (!editIdx) addRow(['No edits match this date range.'], 'message', S_EDIT, { cols: 7 });
-      addRow([], 'empty', null);
-
-      // -- REPORT TOTALS --
-      addRow(['REPORT TOTALS'], 'title', S_TOT, { rgb: '064E3B', cols: 3 });
-      const effectiveSales = hasDateFilter ? totalReleaseValue : totalSalesRevenue;
-
-      if (isReleaseOnlyFilter) {
-        [
-          ['Total Released Items', sortedItems.length.toLocaleString('en-US')],
-          ['Total Released Quantity (Selected Period)', totalReleaseQty.toLocaleString('en-US')],
-          ['Total Released Qty Value', `PHP ${totalReleaseValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`]
-        ].forEach(row => addRow(row, 'totals', S_TOT, { cols: 2 }));
-      } else {
-        [
-          ['Total Items', sortedItems.length.toLocaleString('en-US')],
-          ['Total In-Stock Quantity', totalQty.toLocaleString('en-US')],
-          ['Grand Total Inventory Value (In-Stock)', `PHP ${grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`],
-          ['Total Released Quantity', (hasDateFilter ? totalReleaseQty : totalSoldQty).toLocaleString('en-US')],
-          ['Total Released Qty Value', `PHP ${effectiveSales.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`]
-        ].forEach(row => addRow(row, 'totals', S_TOT, { cols: 2 }));
-      }
-      addRow([], 'empty', null);
-      addRow(['Prepared By', reportSignatories.preparedBy], 'totals', S_TOT, { cols: 2 });
-      addRow(['Approved By', reportSignatories.approvedBy], 'totals', S_TOT, { cols: 2 });
-      addRow(['Received By', '________________________'], 'totals', S_TOT, { cols: 2 });
 
       if (isTravelExport) {
         const travelColumnIndexes = [0, 1, 2, 3, 4, 5, 6, 9, 10, 13, 14];
@@ -4121,12 +3617,6 @@
         travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
         travelRows.push([]);
         travelMeta.push({ type: 'empty', section: null });
-        travelRows.push(['Prepared By', reportSignatories.preparedBy]);
-        travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-        travelRows.push(['Approved By', reportSignatories.approvedBy]);
-        travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
-        travelRows.push(['Received By', '________________________']);
-        travelMeta.push({ type: 'totals', section: S_TOT, cols: 2 });
         wsData.splice(0, wsData.length, ...travelRows);
         rowMeta.splice(0, rowMeta.length, ...travelMeta);
       }
@@ -4145,8 +3635,6 @@
         [S_INV]: ['center', 'center', 'left', 'left', 'left', 'center', 'right', 'center', 'right', 'center', 'right', 'center', 'right', 'center', 'left'],
         // #, Date Released & Time, Item Name, Sub-Item, Remarks, Unit Type, Released Qty, Unit Price, Released Qty Value
         [S_REL]: ['center', 'left', 'left', 'left', 'left', 'center', 'center', 'right', 'right'],
-        // #, Edited Date & Time, Item Name, Field Changed, Before, After, Unit Type
-        [S_EDIT]: ['center', 'left', 'left', 'left', 'left', 'left', 'center'],
         [S_TOT]: ['left', 'right']
       };
       function ha(c, section, type) {
@@ -4368,7 +3856,6 @@
         : ['#', 'Item & Description', 'Serial Number', 'Unit Type', 'Per Unit Price', 'Total Qty', 'Total Qty Value', 'Released Qty', 'Released Qty Value', 'Remaining In\nStock Qty', 'Remaining In\nStock Value', 'Date Released', 'Remarks'];
       const tableRows = [];
       const releaseHistoryRows = [];
-      const editHistoryRows = [];
 
       let totalQty = 0;
       let totalSoldQty = 0;
@@ -4379,6 +3866,7 @@
       let totalReleaseQty = 0;
 
       sortedItems.forEach((item, itemIndex) => {
+        const itemRowNumber = itemIndex + 1;
         const hasSubs = Array.isArray(item.subItems) && item.subItems.length > 0;
         const subSum = hasSubs ? item.subItems.reduce((acc, s) => acc + ((Number(s.price) || 0) * (Number(s.quantity) || 0)), 0) : 0;
         const lineTotal = hasSubs ? (subSum > 0 ? subSum : (item.price * item.quantity)) : (item.price * item.quantity);
@@ -4511,22 +3999,6 @@
           });
         }
 
-        getEditHistory(item).forEach(edit => {
-          if (hasDateFilter && !isDateWithinRange(edit.changedAt, dateFromVal, dateToVal)) {
-            return;
-          }
-          (edit.changes || []).forEach(change => {
-            editHistoryRows.push([
-              editHistoryRows.length + 1,
-              pdfText(item.name),
-              pdfText(item.unitType || item.category || 'pcs'),
-              formatPdfDateTime(edit.changedAt),
-              pdfText(change.label || 'Change'),
-              pdfText(change.from || '-'),
-              pdfText(change.to || '-')
-            ]);
-          });
-        });
       });
 
       doc.autoTable({
@@ -4618,45 +4090,6 @@
         }
       }
 
-      // Signatories footer below totals
-      let signY = finalY + (isReleaseOnlyFilter || isTravelExport ? 20 : 27);
-      if (signY + 34 > 200) {
-        doc.addPage();
-        signY = 22;
-      }
-
-      // Left Column: Prepared and Approved
-      doc.setFontSize(9.5);
-      doc.setFont(undefined, 'bold');
-      doc.setTextColor(71, 85, 105);
-      doc.text('Prepared By:', 7, signY);
-
-      doc.setFontSize(10.5);
-      doc.setFont(undefined, 'bold');
-      doc.setTextColor(15, 23, 42);
-      doc.text(reportSignatories.preparedBy, 7, signY + 6.5);
-
-      doc.setFontSize(9.5);
-      doc.setFont(undefined, 'bold');
-      doc.setTextColor(71, 85, 105);
-      doc.text('Approved By:', 7, signY + 20);
-
-      doc.setFontSize(10.5);
-      doc.setFont(undefined, 'bold');
-      doc.setTextColor(15, 23, 42);
-      doc.text(reportSignatories.approvedBy, 7, signY + 26.5);
-
-      // Right Column: Received (aligned with Prepared, left blank for handwritten signature)
-      doc.setFontSize(9.5);
-      doc.setFont(undefined, 'bold');
-      doc.setTextColor(71, 85, 105);
-      doc.text('Received By:', 225, signY);
-
-      // Subtle signature line for handwriting
-      doc.setDrawColor(203, 213, 225);
-      doc.setLineWidth(0.3);
-      doc.line(225, signY + 14, 285, signY + 14);
-
       if (!isTravelExport) {
         doc.addPage();
         doc.setFontSize(16);
@@ -4711,52 +4144,6 @@
           doc.text('No release transactions have been recorded for this period.', 7, 40);
         }
 
-        doc.addPage();
-        doc.setFontSize(16);
-        doc.setTextColor(15, 23, 42);
-        doc.text(`Complete Edit History${dateRangeLabel ? ` (${dateRangeLabel.trim()})` : ''}`, 7, 20);
-
-        if (editHistoryRows.length > 0) {
-          doc.autoTable({
-            head: [['#', 'Item Name', 'Unit Type', 'Edited At', 'Field Changed', 'Previous Value', 'Updated Value']],
-            body: editHistoryRows,
-            startY: 28,
-            theme: 'striped',
-            headStyles: {
-              fillColor: [2, 132, 199],
-              textColor: [255, 255, 255],
-              fontStyle: 'bold',
-              fontSize: 7.5,
-              cellPadding: 1.5,
-              halign: 'center',
-              valign: 'middle',
-              overflow: 'linebreak'
-            },
-            styles: {
-              fontSize: 7.5,
-              cellPadding: 1.8,
-              halign: 'center',
-              valign: 'middle',
-              overflow: 'linebreak'
-            },
-            margin: { left: 7, right: 7 },
-            tableWidth: 283,
-            rowPageBreak: 'auto',
-            columnStyles: {
-              0: { cellWidth: 10, halign: 'center', cellPadding: { top: 2, right: 1, bottom: 2, left: 1 } },
-              1: { cellWidth: 52, halign: 'left' },
-              2: { cellWidth: 20, halign: 'center' },
-              3: { cellWidth: 40, halign: 'center' },
-              4: { cellWidth: 35, halign: 'center' },
-              5: { cellWidth: 63, halign: 'center' },
-              6: { cellWidth: 63, halign: 'center' }
-            }
-          });
-        } else {
-          doc.setFontSize(11);
-          doc.setTextColor(100, 116, 139);
-          doc.text('No edits have been recorded for this period.', 7, 40);
-        }
 
       }
 
@@ -4770,12 +4157,13 @@
           ? (isSameDayRange
             ? `Filtered PDF export for ${formatDate(dateFromVal)} generated.`
             : `Filtered PDF export (${dateFromVal || 'Start'} to ${dateToVal || 'Now'}) generated.`)
-          : 'Detailed PDF export generated with release and edit history.'));
+          : 'Detailed PDF export generated with release history.'));
     }
   </script>
 
   <!-- Global Layout Script -->
   <script src="global-layout.js"></script>
+  <script src="inventory-table-scroll.js"></script>
 </body>
 
 </html>
